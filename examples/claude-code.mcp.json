@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "telegram-mcp-ag": {
+      "command": "/absolute/path/to/telegram-mcp-ag/.venv/bin/telegram-mcp-ag",
+      "args": [],
+      "env": {
+        "TELEGRAM_API_ID": "set-this-locally",
+        "TELEGRAM_API_HASH": "set-this-locally",
+        "TELEGRAM_SESSION_STRING": "set-this-locally",
+        "TELEGRAM_EXPOSED_TOOLS": "read-only",
+        "TELEGRAM_DEVICE_MODEL": "Telegram MCP AG"
+      }
+    }
+  }
+}

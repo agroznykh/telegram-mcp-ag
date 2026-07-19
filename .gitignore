@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+mcp_errors.log
+
+# Client configs — содержат TELEGRAM_SESSION_STRING и API-креды.
+# В репозиторий попадают только *.example-файлы.
+.codex/
+.mcp.json
+claude_desktop_config.json
+config.env
+*.bak
+
+# Рабочие заметки — не для публичного репозитория
+notes/

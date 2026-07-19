@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-mcp-ag"
+version = "0.1.0"
+description = "Read-only Telegram MCP extension with native voice transcription"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "telegram-mcp-ag maintainers" }]
+dependencies = [
+  "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@0d7b7e3630397ff931624fee7e4b0f33a134c513",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+telegram-mcp-ag = "telegram_mcp_ag.server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
