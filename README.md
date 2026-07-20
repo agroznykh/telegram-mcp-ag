@@ -1,96 +1,120 @@
-# Telegram MCP Chigwell
+# telegram-mcp-ag
 
-Локально устанавливаемый MCP-сервер для Codex и Claude Code. Он использует
-`chigwell/telegram-mcp` как upstream и добавляет read-only расшифровку голосовых,
-аудио- и video-note сообщений через нативный Telegram API.
+Даёт ассистентам (Claude, Codex/ChatGPT) читать ваш Telegram и расшифровывать
+голосовые сообщения, видео-кружки и аудио — средствами самого Telegram, без
+сторонних сервисов распознавания речи. Только чтение: отправка сообщений и
+любые изменяющие действия отключены.
 
-## Возможности
+## Установка в одну команду
 
-- чтение Telegram через upstream `telegram-mcp`;
-- read-only режим по умолчанию;
-- `transcribe_voice_message` для одного сообщения;
-- `transcribe_voice_messages` для пакетной расшифровки с ограничениями времени
-  и размера;
-- запуск одной командой `telegram-mcp-chigwell`.
-
-Отправка сообщений и другие изменяющие действия намеренно не включены в
-конфигурации этого проекта.
-
-## Установка
-
-Нужен Python 3.10 или новее. В отдельной папке для установки создайте окружение:
+**macOS / Linux:**
 
 ```bash
-mkdir -p ~/projects/telegram-mcp-chigwell
-cd ~/projects/telegram-mcp-chigwell
-python3.12 -m venv .venv
+curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash
 ```
 
-Пока пакет не опубликован в GitHub, установите собранный wheel:
+**Windows (PowerShell):**
+
+```powershell
+iex (irm 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1')
+```
+
+**Claude Desktop:** скачайте `.mcpb`-файл со страницы
+[Releases](https://github.com/agroznykh/telegram-mcp-ag/releases) и откройте
+его двойным кликом. Двух полей формы (`api_id`, `api_hash`) достаточно — вход
+в Telegram происходит по QR-коду прямо в переписке с ассистентом, терминал не
+нужен.
+
+**Уже пользуетесь Claude Code?** Можно поставить прямо из чата: попросите
+ассистента «подключи Telegram» — скилл `setup-telegram-mcp` сделает всё то же
+самое, что и `install.sh`, не выходя из разговора.
+
+Установщик сам находит (или ставит без прав администратора) Python 3.10+,
+спросит `api_id`/`api_hash` с [my.telegram.org/apps](https://my.telegram.org/apps)
+и проведёт вход в Telegram по QR-коду. Секреты сохраняются только в
+`~/telegram-mcp-ag/config.env` с правами, доступными лишь вам.
+
+## Что умеет
+
+- чтение чатов, папок, контактов — то, что даёт upstream
+  [`chigwell/telegram-mcp`](https://github.com/chigwell/telegram-mcp), в
+  режиме "только чтение";
+- расшифровка **голосовых сообщений, видео-кружков и аудиофайлов/подкастов**
+  нативным API Telegram;
+- пакетная расшифровка: инструмент `transcribe_voice_messages` берёт список
+  сообщений и сам разбивает его на части с учётом лимита времени одного
+  вызова — не нужно транскрибировать по одному.
+
+**Не умеет:** обычные видео и документы, даже если внутри у них есть звук, —
+Telegram не отдаёт для них транскрипцию через этот API.
+
+Отправка сообщений, изменение чатов, участников и прочие действия, меняющие
+состояние аккаунта, в этом проекте намеренно не включены
+(`TELEGRAM_EXPOSED_TOOLS=read-only`).
+
+## Premium и бесплатная квота
+
+Расшифровка — функция самого Telegram, не этого проекта, и у неё есть
+ограничение:
+
+- **Telegram Premium** — расшифровка без ограничений.
+- **Без Premium** — есть небольшая бесплатная квота (обычно около двух
+  сообщений в неделю, с ограничением по длительности), которая обновляется
+  раз в неделю.
+
+Инструмент `check_transcription_access` показывает точный статус: есть ли
+Premium, сколько попыток осталось на этой неделе и когда квота обновится.
+Ассистент проверяет его сам перед расшифровкой, так что вместо непонятной
+ошибки Telegram вы увидите человеческое объяснение "квота закончится тогда-то".
+
+## Поддерживаемые клиенты
+
+| Клиент | Как подключить |
+| :--- | :--- |
+| Claude Code | `install.sh`/`install.ps1` регистрируют сами, либо скилл `setup-telegram-mcp` прямо в чате, либо вручную: `claude mcp add -s user telegram-mcp-ag -- ~/telegram-mcp-ag/.venv/bin/telegram-mcp-ag` |
+| Claude Desktop | `.mcpb`-бандл со страницы [Releases](https://github.com/agroznykh/telegram-mcp-ag/releases), установка двойным кликом |
+| Codex CLI | `install.sh`/`install.ps1` регистрируют сами, либо `codex mcp add` |
+| ChatGPT Desktop | тот же `~/.codex/config.toml`, что и Codex CLI — установщик правит его один раз для обоих |
+| ChatGPT web / mobile | **не поддерживается.** Эти клиенты умеют только удалённый MCP по HTTPS, а этот сервер — локальный процесс по stdio (session-строка Telegram живёт у вас на диске, а не в облаке ChatGPT) |
+
+## Установка на вторую машину
+
+Одна Telegram-сессия работает только на одной машине: если скопировать
+`TELEGRAM_SESSION_STRING` на вторую, Telegram завершит обе сессии ошибкой
+`AUTH_KEY_DUPLICATED`. Для второго компьютера (например, рабочего ноутбука и
+VPS) запустите установщик там ещё раз — он проведёт отдельный вход и
+сохранит отдельную сессию:
 
 ```bash
-.venv/bin/python -m pip install /absolute/path/to/telegram_mcp_chigwell-0.1.0-py3-none-any.whl
+bash install.sh --relogin
 ```
 
-При публикации в GitHub установка будет выглядеть так, без ручного клонирования:
+`api_id`/`api_hash` использовать повторно можно — это не секрет уровня
+сессии, они привязаны к вашему Telegram-приложению, а не к конкретному входу.
 
-```bash
-.venv/bin/python -m pip install "git+https://github.com/<owner>/telegram-mcp-chigwell.git@v0.1.0"
-```
+## Как отозвать доступ
 
-Пакет сам устанавливает проверенную ревизию `chigwell/telegram-mcp` напрямую из
-GitHub. Он не использует одноимённый пакет с PyPI.
+1. В самом Telegram: **Settings → Devices**, найдите устройство с именем вида
+   `telegram-mcp-ag (<имя компьютера>)` и завершите его сессию.
+2. Локально снять регистрацию из клиентов и удалить сохранённые данные:
+   ```bash
+   bash install.sh --uninstall
+   ```
 
-## Telegram-вход
-
-Сгенерируйте сессию в том же окружении:
-
-```bash
-.venv/bin/telegram-mcp-generate-session --qr
-```
-
-В Telegram откройте `Settings -> Devices -> Link Desktop Device` и отсканируйте
-QR-код. Не добавляйте `TELEGRAM_SESSION_STRING` в репозиторий и не отправляйте её
-в чат.
-
-## Codex
-
-Скопируйте образец из [examples/codex.config.toml](examples/codex.config.toml) в
-project-scoped `.codex/config.toml`, замените путь к команде и значения
-`TELEGRAM_*` только локально. После изменения создайте новый тред или
-перезапустите Codex.
-
-## Claude Code
-
-Скопируйте [examples/claude-code.mcp.json](examples/claude-code.mcp.json) в
-`.mcp.json` нужного проекта либо добавьте эквивалентную конфигурацию через
-`claude mcp add`. Замените локальные плейсхолдеры пути и Telegram-переменных.
-
-## Проверка
-
-После настройки попросите клиента перечислить аккаунты или показать непрочитанные
-диалоги, не отмечая сообщения прочитанными. Расшифровка требует доступа Telegram
-к функции транскрибации, который обычно есть у Premium-аккаунтов.
+Отзыв сессии в Telegram — самый быстрый способ: он работает мгновенно и не
+требует доступа к машине, где стоял сервер.
 
 ## Разработка
 
-```bash
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m pip wheel --wheel-dir dist .
-```
+См. [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Безопасность
 
-- Оставляйте `TELEGRAM_EXPOSED_TOOLS = "read-only"`.
-- Сессия Telegram равна доступу к вашему аккаунту.
-- Используйте отдельный MCP-проект, чтобы Telegram-инструменты не попадали в
-  обычные рабочие треды.
-- Для отзыва доступа завершите соответствующую сессию в Telegram `Settings -> Devices`.
+Session-строка Telegram равносильна полному доступу к аккаунту. Модель угроз
+и правила обращения с секретами — в [SECURITY.md](SECURITY.md).
 
-## Лицензии
+## Лицензия
 
-Эта надстройка распространяется под Apache-2.0. Upstream
-[`chigwell/telegram-mcp`](https://github.com/chigwell/telegram-mcp) также
-лицензирован под Apache-2.0.
+Apache-2.0. Upstream
+[`chigwell/telegram-mcp`](https://github.com/chigwell/telegram-mcp) тоже
+распространяется под Apache-2.0.
