@@ -27,12 +27,18 @@ if [ "$pkg_version" != "$manifest_version" ]; then
     die "версия в pyproject.toml ($pkg_version) не совпадает с manifest.json ($manifest_version)"
 fi
 
-# Апстрим закреплён по SHA в двух местах — рассинхрон означает, что бандл
-# соберётся не с тем кодом, который протестирован.
-pkg_ref="$(grep -o 'telegram-mcp\.git@[0-9a-f]\{40\}' "$REPO_DIR/pyproject.toml" | head -1)"
-bundle_ref="$(grep -o 'telegram-mcp\.git@[0-9a-f]\{40\}' "$BUNDLE_DIR/pyproject.toml" | head -1)"
-if [ "$pkg_ref" != "$bundle_ref" ]; then
-    die "SHA апстрима разошёлся: $pkg_ref в pyproject.toml против $bundle_ref в mcpb/pyproject.toml"
+# Зависимости перечислены дважды: в пакете и в бандле. Расхождение означает,
+# что у пользователя встанет не то, на чём бандл проверяли, — вплоть до
+# отсутствия модуля, который импортируется на старте. Сверяем весь список
+# целиком, а не только SHA апстрима: так же ловится и забытая новая зависимость.
+deps_of() {
+    sed -n '/^dependencies = \[/,/^]/p' "$1" \
+        | grep -o '"[^"]*"' | tr -d '"' | sort
+}
+missing="$(comm -23 <(deps_of "$REPO_DIR/pyproject.toml") <(deps_of "$BUNDLE_DIR/pyproject.toml"))"
+if [ -n "$missing" ]; then
+    die "в mcpb/pyproject.toml не хватает зависимостей из pyproject.toml:
+$missing"
 fi
 
 # Исходники кладём в бандл на сборке, а не держим второй копией в репозитории.

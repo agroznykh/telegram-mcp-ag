@@ -2,9 +2,13 @@
 
 import asyncio
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Optional, Union
 
 from telethon.errors.rpcerrorlist import PremiumAccountRequiredError
@@ -12,13 +16,27 @@ from telethon.tl import functions
 
 from telegram_mcp_ag import config as _config
 
+# Login-only mode: credentials are there but no session is. Rather than dying
+# and sending the user to the terminal, the server comes up with only the QR
+# login tools (see login.py). telegram_mcp.runtime builds its clients at import
+# time and exits when no session is configured, so it is handed a throwaway file
+# session here; _install_login_client() swaps it for an in-memory one below,
+# before anything connects, so no auth key is ever written to disk.
+_LOGIN_MODE = False
+_LOGIN_TMPDIR = None
+
 try:
     _config.load()
+except _config.MissingSessionError:
+    _LOGIN_MODE = True
+    _LOGIN_TMPDIR = tempfile.mkdtemp(prefix="telegram-mcp-ag-bootstrap-")
+    os.environ["TELEGRAM_SESSION_NAME"] = str(Path(_LOGIN_TMPDIR) / "bootstrap")
 except _config.ConfigError as _config_error:
     print(f"telegram-mcp-ag: {_config_error}", file=sys.stderr)
     sys.exit(1)
 
 from telegram_mcp import runner as _runner
+from telegram_mcp import runtime as _runtime
 from telegram_mcp.runtime import (
     ToolAnnotations,
     ensure_connected,
@@ -32,6 +50,40 @@ from telegram_mcp.runtime import (
     validate_id,
     with_account,
 )
+
+
+def _install_login_client() -> None:
+    """Replace the throwaway file session with an in-memory one.
+
+    Called before any connection is made, so the bootstrap ``.session`` file
+    stays empty and can be deleted right away. Once the QR login succeeds this
+    same client is authorized in place, which is what lets the reading tools
+    start working without restarting the extension.
+    """
+    from telethon.sessions import StringSession
+
+    for label, client in list(_runtime.clients.items()):
+        try:
+            client.session.close()
+        except Exception:
+            pass
+        _runtime.clients[label] = _runtime._build_client(StringSession(), label)
+
+    shutil.rmtree(_LOGIN_TMPDIR, ignore_errors=True)
+    os.environ.pop("TELEGRAM_SESSION_NAME", None)
+
+
+_LOGIN_TOOLS: list = []
+_HIDDEN_TOOLS: dict = {}
+
+if _LOGIN_MODE:
+    import nest_asyncio
+
+    from telegram_mcp_ag import login as _login
+
+    _install_login_client()
+    _LOGIN_TOOLS = _login.register(mcp, ToolAnnotations, get_client)
+    _login.set_activation_hook(lambda: _activate_reading_tools())
 
 
 DEFAULT_MAX_CHUNK_DURATION = 180
@@ -539,6 +591,67 @@ async def transcribe_voice_message(
     )
 
 
+async def _activate_reading_tools() -> str:
+    """Put the reading tools back once the account is authorized.
+
+    Returns ``"activated"`` if the host was told about the new tools, or
+    ``"restart"`` if it has to be restarted to notice them.
+    """
+    for name, tool in _HIDDEN_TOOLS.items():
+        mcp._tool_manager._tools.setdefault(name, tool)
+    _HIDDEN_TOOLS.clear()
+
+    # StringSession keeps no entity cache, so the first chat lookup would
+    # otherwise pay for a full dialog fetch. Backgrounded for the same reason
+    # the upstream runner backgrounds it: a flood wait here would hang the call.
+    async def _warm_caches() -> None:
+        try:
+            await asyncio.gather(*(cl.get_dialogs() for cl in _runtime.clients.values()))
+        except Exception as exc:
+            print(f"Entity cache warm failed: {exc}", file=sys.stderr)
+
+    asyncio.create_task(_warm_caches())
+
+    try:
+        await mcp.get_context().session.send_tool_list_changed()
+        return "activated"
+    except Exception as exc:
+        print(f"telegram-mcp-ag: tools/list_changed failed: {exc}", file=sys.stderr)
+        return "restart"
+
+
+async def _run_login_server() -> None:
+    """Serve only the login tools until the user has scanned the QR code."""
+    try:
+        for client in _runtime.clients.values():
+            await client.connect()
+        print(
+            "No Telegram session yet: serving login tools only. "
+            "Ask the assistant to connect Telegram.",
+            file=sys.stderr,
+        )
+        await mcp.run_stdio_async()
+    finally:
+        await asyncio.gather(
+            *(cl.disconnect() for cl in _runtime.clients.values()), return_exceptions=True
+        )
+
+
 def main() -> None:
     """Start the upstream STDIO server after registering this package's tools."""
-    _runner.main()
+    if not _LOGIN_MODE:
+        _runner.main()
+        return
+
+    _runtime._configure_allowed_roots_from_cli(sys.argv[1:])
+    _runtime._apply_exposed_tools_mode()
+
+    # Everything except the login tools is withheld: without a session they
+    # would only produce Telegram authorization errors, and this project's rule
+    # is to check access up front rather than let the user hit an exception.
+    for name in list(mcp._tool_manager._tools):
+        if name not in _LOGIN_TOOLS:
+            _HIDDEN_TOOLS[name] = mcp._tool_manager._tools.pop(name)
+
+    nest_asyncio.apply()
+    asyncio.run(_run_login_server())

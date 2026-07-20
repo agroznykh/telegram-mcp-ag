@@ -13,10 +13,14 @@ authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [
   "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@0d7b7e3630397ff931624fee7e4b0f33a134c513",
   "python-dotenv>=1.1.0",
+  # QR login from the chat. pypng is qrcode's pure-Python PNG writer: it keeps
+  # Pillow, a large compiled wheel, out of the bundle for one monochrome image.
+  "qrcode>=8.0",
+  "pypng>=0.20220715",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 telegram-mcp-ag = "telegram_mcp_ag.server:main"
