@@ -11,9 +11,10 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/agroznykh/telegram-mcp-ag.git"
-# No tagged release exists yet (see PLAN.md step 10). Override for testing:
-# TELEGRAM_MCP_AG_REF=some-branch bash install.sh
-REPO_REF="${TELEGRAM_MCP_AG_REF:-main}"
+REPO_API="https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest"
+# Override for testing: TELEGRAM_MCP_AG_REF=some-branch bash install.sh
+# Resolved below, once the output helpers it might warn through are defined.
+REPO_REF=""
 
 # Must match telegram_mcp_ag.config.CONFIG_DIR exactly -- it is not
 # configurable, so this path cannot be overridden here either.
@@ -56,6 +57,22 @@ warn() { printf '%s[!]%s %s\n' "$C_WARN" "$C_RESET" "$1" >&2; }
 error() { printf '%s[x]%s %s\n' "$C_ERR" "$C_RESET" "$1" >&2; }
 
 trap 'error "Установка прервана из-за ошибки (строка $LINENO). Проблему можно почитать выше; после исправления просто запустите install.sh ещё раз -- он не оставляет дубликатов."' ERR
+
+# Installs the latest tagged release by default, falling back to `main` if no
+# release exists yet or the GitHub API call fails (offline, rate-limited).
+# `|| true` on the capture matters: with `pipefail`, a curl failure inside it
+# would otherwise trip the ERR trap above and abort the whole install over
+# something that has a perfectly good fallback.
+_resolve_repo_ref() {
+    if [[ -n "${TELEGRAM_MCP_AG_REF:-}" ]]; then
+        printf '%s' "$TELEGRAM_MCP_AG_REF"
+        return
+    fi
+    local tag=""
+    tag="$(curl -fsSL "$REPO_API" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)"/\1/')" || true
+    printf '%s' "${tag:-main}"
+}
+REPO_REF="$(_resolve_repo_ref)"
 
 # Paths of any throwaway venvs _maintenance_python() creates (one per
 # line). A file, not a shell variable, because it must survive the

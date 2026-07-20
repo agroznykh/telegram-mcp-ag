@@ -52,9 +52,23 @@ try {
 }
 
 $RepoUrl = 'https://github.com/agroznykh/telegram-mcp-ag.git'
-# No tagged release exists yet (see PLAN.md step 10). Override for testing:
-# $env:TELEGRAM_MCP_AG_REF = 'some-branch'
-$RepoRef = if ($env:TELEGRAM_MCP_AG_REF) { $env:TELEGRAM_MCP_AG_REF } else { 'main' }
+$RepoApi = 'https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest'
+
+# Installs the latest tagged release by default, falling back to `main` if no
+# release exists yet or the GitHub API call fails (offline, rate-limited).
+# Override for testing: $env:TELEGRAM_MCP_AG_REF = 'some-branch'
+function Resolve-RepoRef {
+    if ($env:TELEGRAM_MCP_AG_REF) { return $env:TELEGRAM_MCP_AG_REF }
+    try {
+        $release = Invoke-RestMethod -Uri $RepoApi -ErrorAction Stop
+        if ($release.tag_name) { return $release.tag_name }
+    } catch {
+        # No release yet, or the API call failed -- main is a fine fallback.
+        Write-Verbose "Could not resolve the latest release, using main: $($_.Exception.Message)"
+    }
+    return 'main'
+}
+$RepoRef = Resolve-RepoRef
 
 # Must match telegram_mcp_ag.config.CONFIG_DIR exactly -- it is not
 # configurable, so this path cannot be overridden here either. Python's
