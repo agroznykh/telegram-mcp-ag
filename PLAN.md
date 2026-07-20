@@ -23,10 +23,11 @@ MCP-сервер для чтения Telegram с транскрипцией го
 - [ ] Telegram → Settings → Devices → завершить сессию `Codex Telegram MCP Chigwell`
 - [ ] Перевыпустить `api_hash` на my.telegram.org/apps (по возможности)
 - [ ] Скопировать/переименовать папку проекта в `telegram-mcp-ag` и перезапустить Claude Code
-- [ ] `gh auth refresh -h github.com -s workflow` — понадобится на шаге 9 (CI)
 
 Репозиторий создам сам через `gh` — доступ к аккаунту `agroznykh` проверен
-(скоуп `repo` есть, `workflow` — нет, см. шаг 9).
+(скоуп `repo` есть). `workflow`-скоуп на самом деле не понадобился даже для
+`.github/workflows/` на шаге 9: пуш идёт по SSH, а не через `gh`-токен,
+так что это ограничение просто не применяется.
 
 ---
 
@@ -300,7 +301,7 @@ login-токен картинкой: ни номера, ни кода, ни па
 
 ---
 
-## Шаг 9. Тесты — локальная часть готова ✅, CI ждёт прав токена
+## Шаг 9. Тесты — готово ✅
 
 **Модель: Sonnet 5** · **новый чат**
 
@@ -309,33 +310,35 @@ login-токен картинкой: ни номера, ни кода, ни па
 2. [x] Тесты на `config.py` (были), на проверку квоты и на определение типа медиа
    (`QuotaHelpersTest`/`ServerHelpersTest` уже покрывали это — просто переехали
    в pytest-стиль вместе с остальным)
-3. [x] `tests/test_installer_syntax.py`: `bash -n` — жёстко (запускается всегда),
-   `shellcheck` и `PSScriptAnalyzer` — через `pytest.mark.skipif`, если инструмента
-   нет локально. Прогнано с временно поставленным `shellcheck` (снесён после
+3. [x] `tests/test_installer_syntax.py`: `bash -n`/`shellcheck` для `install.sh`
+   (пропускаются на Windows — скрипт для macOS/Linux), синтаксис + `PSScriptAnalyzer`
+   для `install.ps1`. Прогнано с временно поставленным `shellcheck` (снесён после
    проверки): нашёл `SC2015` в `install.sh` (`A && B || C` вместо `if/then`),
    поправлено на явный `if`
 
-**Критерий готовности («`pytest` зелёный локально») — выполнен:**
-45 passed, 2 skipped (skip — PowerShell недоступен на этой Linux-машине, отработает в CI).
+**Критерий готовности («`pytest` зелёный локально») — выполнен.**
 
-### CI на всех ОС — workflow написан, не запущен
+### CI на всех ОС — зелёный ✅
 
 `.github/workflows/tests.yml` (матрица Linux+macOS+Windows × Python 3.10–3.13,
-устанавливает `shellcheck`/`PSScriptAnalyzer` перед прогоном pytest — тем самым
-пункты 4 и 5 покрываются тем же `test_installer_syntax.py`, без отдельных шагов)
-и `.github/workflows/release.yml` (сборка `.mcpb` + wheel и публикация в GitHub
-Release по тегу `v*`) добавлены, но **не запускались**: токен `gh` без скоупа
-`workflow`, push в `.github/workflows/` будет отклонён.
+ставит `shellcheck`/`PSScriptAnalyzer` перед pytest — пункты 4 и 5 покрываются
+тем же `test_installer_syntax.py`, без отдельных шагов) и
+`.github/workflows/release.yml` (сборка `.mcpb` + wheel и публикация в GitHub
+Release по тегу `v*`) запушены и прогнаны.
 
-**Осталось на пользователе:**
-```bash
-gh auth refresh -h github.com -s workflow
-```
-— после этого запушить и один раз проверить, что все джобы матрицы позеленели
-(это открывает браузер для авторизации, самостоятельно выполнить не могу).
+`gh auth refresh -h github.com -s workflow` в итоге не понадобился: пуш идёт
+по SSH (`git@github.com:...`), а скоуп `workflow` ограничивает только
+HTTPS/API-токены вроде того, что использует `gh`.
 
-**Критерий готовности («зелёный CI на всех трёх ОС») — не подтверждён**, пока
-workflow ни разу не запускался на GitHub.
+**Найдено и исправлено при первом прогоне:** на `windows-latest` `bash` в PATH —
+это заглушка WSL («Windows Subsystem for Linux has no installed distributions»),
+а не Git Bash, так что `bash -n install.sh` там падал по причине, не связанной
+со скриптом. Раз `install.sh` и не предназначен для Windows, эти проверки
+помечены `skipif(sys.platform == "win32")` — симметрично тому, что
+`install.ps1` проверяется только там, где есть PowerShell.
+
+**Критерий готовности («зелёный CI на всех трёх ОС») — выполнен:**
+все 12 джобов матрицы (3 ОС × 4 версии Python) прошли зелёным после этой правки.
 
 ---
 
