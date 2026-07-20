@@ -698,6 +698,11 @@ main() {
     print_summary
 }
 
-if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
+# `${BASH_SOURCE[0]} == ${0}` looks equivalent but isn't: when this script
+# runs via `curl ... | bash` there is no source file at all, so BASH_SOURCE[0]
+# is empty while $0 is "bash" -- the comparison is always false and main()
+# silently never runs. `return` only succeeds inside a sourced script/function,
+# so this works the same whether the script came from a file, stdin, or a pipe.
+if ! (return 0 2>/dev/null); then
     main "$@"
 fi
