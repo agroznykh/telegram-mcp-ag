@@ -12,6 +12,7 @@ license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [
   "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@0d7b7e3630397ff931624fee7e4b0f33a134c513",
+  "python-dotenv>=1.1.0",
 ]
 
 [project.optional-dependencies]

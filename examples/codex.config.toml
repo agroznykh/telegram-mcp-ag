@@ -5,10 +5,3 @@ startup_timeout_sec = 60
 tool_timeout_sec = 120
 default_tools_approval_mode = "prompt"
 enabled = true
-
-[mcp_servers.telegram_mcp_ag.env]
-TELEGRAM_API_ID = "set-this-locally"
-TELEGRAM_API_HASH = "set-this-locally"
-TELEGRAM_SESSION_STRING = "set-this-locally"
-TELEGRAM_EXPOSED_TOOLS = "read-only"
-TELEGRAM_DEVICE_MODEL = "Telegram MCP AG"

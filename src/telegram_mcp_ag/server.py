@@ -1,5 +1,15 @@
 """Telegram MCP launcher with safe, read-only voice transcription tools."""
 
+import sys
+
+from telegram_mcp_ag import config as _config
+
+try:
+    _config.load()
+except _config.ConfigError as _config_error:
+    print(f"telegram-mcp-ag: {_config_error}", file=sys.stderr)
+    sys.exit(1)
+
 from telegram_mcp import runner as _runner
 from telegram_mcp.runtime import *
 
