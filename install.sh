@@ -584,7 +584,9 @@ do_uninstall() {
     info "Снимаю регистрации из клиентов..."
 
     if command -v claude >/dev/null 2>&1; then
-        claude mcp remove -s user "$SERVER_NAME" >/dev/null 2>&1 && ok "Claude Code: сервер удалён." || true
+        if claude mcp remove -s user "$SERVER_NAME" >/dev/null 2>&1; then
+            ok "Claude Code: сервер удалён."
+        fi
     fi
 
     if command -v codex >/dev/null 2>&1; then
