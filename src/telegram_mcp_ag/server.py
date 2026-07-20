@@ -1,6 +1,14 @@
 """Telegram MCP launcher with safe, read-only voice transcription tools."""
 
+import asyncio
+import json
 import sys
+import time
+from datetime import datetime, timezone
+from typing import List, Optional, Union
+
+from telethon.errors.rpcerrorlist import PremiumAccountRequiredError
+from telethon.tl import functions
 
 from telegram_mcp_ag import config as _config
 
@@ -11,13 +19,131 @@ except _config.ConfigError as _config_error:
     sys.exit(1)
 
 from telegram_mcp import runner as _runner
-from telegram_mcp.runtime import *
+from telegram_mcp.runtime import (
+    ToolAnnotations,
+    ensure_connected,
+    get_client,
+    get_sender_name,
+    json_serializer,
+    log_and_format_error,
+    mcp,
+    resolve_entity,
+    sanitize_user_content,
+    validate_id,
+    with_account,
+)
 
 
 DEFAULT_MAX_CHUNK_DURATION = 180
 DEFAULT_MAX_CHUNK_MESSAGES = 6
 DEFAULT_MAX_RUNTIME_SECONDS = 100
 DEFAULT_REQUEST_TIMEOUT = 30
+
+# What Telegram's native transcription actually handles today. Regular videos
+# and plain documents (even ones that happen to contain audio) come back as
+# some other MessageMedia* kind and are rejected below with a clear message
+# instead of being sent to Telegram and failing there.
+SUPPORTED_MEDIA_KINDS = frozenset({"voice", "video_note", "audio"})
+
+# Telegram has no RPC to ask "how many free transcriptions are left": the
+# trial_remains_num/trial_remains_until_date fields only appear in the
+# response of an actual messages.transcribeAudio call. Telegram's own TDLib
+# client does the same thing we do here: remember the last real answer for
+# the lifetime of the session and treat it as unknown until then.
+_ACCOUNT_STATE: dict[int, dict] = {}
+
+
+def _account_state(cl) -> dict:
+    return _ACCOUNT_STATE.setdefault(
+        id(cl),
+        {
+            "is_premium": None,
+            "trial_remains_num": None,
+            "trial_remains_until_date": None,
+            "weekly_quota": None,
+            "max_trial_duration_seconds": None,
+        },
+    )
+
+
+async def _get_is_premium(cl) -> bool:
+    state = _account_state(cl)
+    if state["is_premium"] is None:
+        me = await cl.get_me()
+        state["is_premium"] = bool(getattr(me, "premium", False))
+    return state["is_premium"]
+
+
+async def _get_trial_limits(cl) -> tuple[Optional[int], Optional[int]]:
+    """Return (weekly_quota, max_trial_duration_seconds) from help.getAppConfig.
+
+    These are the same values Telegram's official clients read to show "N
+    free transcriptions per week, up to M seconds each" — global ceilings,
+    not this account's remaining count.
+    """
+    state = _account_state(cl)
+    if state["weekly_quota"] is not None or state["max_trial_duration_seconds"] is not None:
+        return state["weekly_quota"], state["max_trial_duration_seconds"]
+
+    result = await cl(functions.help.GetAppConfigRequest(hash=0))
+    config = getattr(result, "config", None)
+    for entry in getattr(config, "value", None) or []:
+        key = getattr(entry, "key", None)
+        raw_value = getattr(getattr(entry, "value", None), "value", None)
+        if key == "transcribe_audio_trial_weekly_number" and raw_value is not None:
+            state["weekly_quota"] = int(raw_value)
+        elif key == "transcribe_audio_trial_duration_max" and raw_value is not None:
+            state["max_trial_duration_seconds"] = int(raw_value)
+
+    return state["weekly_quota"], state["max_trial_duration_seconds"]
+
+
+def _record_trial_state(cl, trial_remains_num, trial_remains_until_date) -> None:
+    if trial_remains_num is None and trial_remains_until_date is None:
+        return
+    state = _account_state(cl)
+    state["trial_remains_num"] = trial_remains_num
+    state["trial_remains_until_date"] = trial_remains_until_date
+
+
+def _format_reset_date(trial_remains_until_date: Optional[int]) -> Optional[str]:
+    if trial_remains_until_date is None:
+        return None
+    return datetime.fromtimestamp(trial_remains_until_date, tz=timezone.utc).isoformat()
+
+
+def _quota_exhausted_message(trial_remains_until_date: Optional[int]) -> str:
+    base = "Skipped: the free weekly transcription quota for this account is used up."
+    reset_at = _format_reset_date(trial_remains_until_date)
+    if reset_at is None:
+        return f"{base} Telegram Premium removes this limit."
+    return f"{base} It resets at {reset_at} (UTC). Telegram Premium removes this limit."
+
+
+def _unsupported_media_message(media_kind: str) -> str:
+    if media_kind == "video":
+        return (
+            "Regular videos aren't supported for transcription "
+            "(voice messages, video circles, and audio files are)."
+        )
+    return (
+        f"Message media type '{media_kind}' isn't supported for transcription "
+        "(only voice messages, video circles, and audio files are)."
+    )
+
+
+def _split_entries_by_quota(
+    entries: list[dict], quota_remaining: Optional[int]
+) -> tuple[list[dict], list[dict]]:
+    """Split entries into (allowed, skipped) given a known remaining trial quota.
+
+    ``quota_remaining=None`` means the remaining count isn't known yet, so
+    nothing is preemptively skipped.
+    """
+    if quota_remaining is None:
+        return entries, []
+    quota_remaining = max(0, quota_remaining)
+    return entries[:quota_remaining], entries[quota_remaining:]
 
 
 def _message_media_kind(msg) -> str:
@@ -43,7 +169,7 @@ def _message_media_duration(msg) -> Optional[float]:
     return None
 
 
-def _transcription_payload(msg, result) -> dict:
+def _transcription_payload(cl, msg, result) -> dict:
     text = getattr(result, "text", "") or ""
     payload = {
         "message_id": msg.id,
@@ -57,10 +183,11 @@ def _transcription_payload(msg, result) -> dict:
     }
 
     trial_remains_num = getattr(result, "trial_remains_num", None)
+    trial_remains_until_date = getattr(result, "trial_remains_until_date", None)
+    _record_trial_state(cl, trial_remains_num, trial_remains_until_date)
+
     if trial_remains_num is not None:
         payload["trial_remains_num"] = trial_remains_num
-
-    trial_remains_until_date = getattr(result, "trial_remains_until_date", None)
     if trial_remains_until_date is not None:
         payload["trial_remains_until_date"] = trial_remains_until_date
 
@@ -112,7 +239,7 @@ async def _transcribe_one_message(
             cl(functions.messages.TranscribeAudioRequest(peer=entity, msg_id=msg.id)),
             timeout=request_timeout,
         )
-        last_payload = _transcription_payload(msg, result)
+        last_payload = _transcription_payload(cl, msg, result)
         last_payload["attempt"] = attempt + 1
         if not last_payload["pending"] or last_payload["text"]:
             break
@@ -120,6 +247,62 @@ async def _transcribe_one_message(
             await asyncio.sleep(retry_delay)
 
     return last_payload
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Check Transcription Access",
+        openWorldHint=True,
+        readOnlyHint=True,
+    )
+)
+@with_account(readonly=True)
+async def check_transcription_access(account: str = None) -> str:
+    """Report Premium status and remaining free voice-transcription quota.
+
+    Telegram does not expose a way to query the remaining weekly trial count
+    on its own: it is only revealed in the response of an actual
+    transcription attempt. Until this account has made one in this session,
+    ``quota_known`` is ``false`` and only the global weekly ceiling is shown.
+    """
+    try:
+        cl = get_client(account)
+        await ensure_connected(cl)
+
+        is_premium = await _get_is_premium(cl)
+        weekly_quota, max_trial_duration_seconds = await _get_trial_limits(cl)
+
+        result = {
+            "is_premium": is_premium,
+            "weekly_trial_quota": weekly_quota,
+            "max_trial_duration_seconds": max_trial_duration_seconds,
+        }
+
+        if is_premium:
+            result["note"] = "Premium account: no weekly quota or duration limit applies."
+        else:
+            state = _account_state(cl)
+            trial_remains_num = state["trial_remains_num"]
+            trial_remains_until_date = state["trial_remains_until_date"]
+            result["quota_known"] = trial_remains_num is not None
+            if result["quota_known"]:
+                result["trial_remains_num"] = trial_remains_num
+                result["trial_remains_until_date"] = trial_remains_until_date
+                result["trial_remains_until_date_iso"] = _format_reset_date(
+                    trial_remains_until_date
+                )
+            else:
+                result["note"] = (
+                    "Remaining trial count isn't known yet: Telegram only reports it "
+                    "after a transcription attempt. Up to "
+                    f"{weekly_quota if weekly_quota is not None else 'a few'} messages/week, "
+                    f"each up to {max_trial_duration_seconds if max_trial_duration_seconds is not None else 'a limited number of'} "
+                    "seconds, are available until the first attempt this session."
+                )
+
+        return json.dumps(result, ensure_ascii=False, indent=2, default=json_serializer)
+    except Exception as exc:
+        return log_and_format_error("check_transcription_access", exc, account=account)
 
 
 @mcp.tool(
@@ -160,6 +343,10 @@ async def transcribe_voice_messages(
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
 
+        is_premium = await _get_is_premium(cl)
+        state = _account_state(cl)
+        quota_remaining = None if is_premium else state["trial_remains_num"]
+
         started_at = time.monotonic()
         items = []
         entries = []
@@ -186,6 +373,17 @@ async def transcribe_voice_messages(
                     }
                 )
                 continue
+            if media_kind not in SUPPORTED_MEDIA_KINDS:
+                items.append(
+                    {
+                        "message_id": message_id,
+                        "sender": get_sender_name(msg),
+                        "date": getattr(msg, "date", None),
+                        "media": media_kind,
+                        "error": _unsupported_media_message(media_kind),
+                    }
+                )
+                continue
 
             entries.append(
                 {
@@ -196,9 +394,22 @@ async def transcribe_voice_messages(
                 }
             )
 
+        entries, skipped_quota_entries = _split_entries_by_quota(entries, quota_remaining)
+        for entry in skipped_quota_entries:
+            items.append(
+                {
+                    "message_id": entry["message_id"],
+                    "sender": get_sender_name(entry["msg"]),
+                    "date": getattr(entry["msg"], "date", None),
+                    "media": entry["media"],
+                    "error": _quota_exhausted_message(state["trial_remains_until_date"]),
+                }
+            )
+
         chunks = _chunk_message_entries(entries, max_chunk_duration, max_chunk_messages)
         processed_message_ids = []
         stopped_before = None
+        quota_exhausted_mid_loop = False
 
         for chunk_index, chunk in enumerate(chunks):
             elapsed = time.monotonic() - started_at
@@ -211,6 +422,18 @@ async def transcribe_voice_messages(
                 if elapsed + min(request_timeout, 10.0) >= max_runtime_seconds:
                     stopped_before = chunk_index
                     break
+
+                if quota_exhausted_mid_loop:
+                    items.append(
+                        {
+                            "message_id": entry["message_id"],
+                            "sender": get_sender_name(entry["msg"]),
+                            "date": getattr(entry["msg"], "date", None),
+                            "media": entry["media"],
+                            "error": _quota_exhausted_message(state["trial_remains_until_date"]),
+                        }
+                    )
+                    continue
 
                 msg = entry["msg"]
                 try:
@@ -226,6 +449,20 @@ async def transcribe_voice_messages(
                         "duration": _message_media_duration(msg),
                         "error": f"Telegram transcription request timed out after {request_timeout:.0f}s.",
                     }
+                except PremiumAccountRequiredError:
+                    # Telegram's authoritative answer: no free attempts left (or this
+                    # message doesn't qualify). Record it so later calls in this
+                    # session skip straight to the quota message instead of retrying.
+                    state["trial_remains_num"] = 0
+                    payload = {
+                        "message_id": msg.id,
+                        "sender": get_sender_name(msg),
+                        "date": getattr(msg, "date", None),
+                        "media": _message_media_kind(msg),
+                        "duration": _message_media_duration(msg),
+                        "error": _quota_exhausted_message(state["trial_remains_until_date"]),
+                    }
+                    quota_exhausted_mid_loop = True
 
                 items.append(payload)
                 processed_message_ids.append(msg.id)
@@ -268,8 +505,6 @@ async def transcribe_voice_messages(
             indent=2,
             default=json_serializer,
         )
-    except telethon.errors.rpcerrorlist.PremiumAccountRequiredError:
-        return "Telegram refused transcription: this session does not have access to voice transcription. Check that the session belongs to your Premium account."
     except Exception as exc:
         return log_and_format_error(
             "transcribe_voice_messages", exc, chat_id=chat_id, message_ids=message_ids
@@ -290,6 +525,7 @@ async def transcribe_voice_message(
     message_id: int,
     retry_count: int = 2,
     retry_delay: float = 1.5,
+    request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
     account: str = None,
 ) -> str:
     """Transcribe one Telegram voice, audio, or video-note message."""
@@ -298,6 +534,7 @@ async def transcribe_voice_message(
         message_ids=[message_id],
         retry_count=retry_count,
         retry_delay=retry_delay,
+        request_timeout=request_timeout,
         account=account,
     )
 
