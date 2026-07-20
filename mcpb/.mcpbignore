@@ -1,0 +1,12 @@
+# uv.lock намеренно НЕ исключён: он едет в бандл, чтобы у пользователя
+# встали ровно те версии зависимостей, на которых бандл собран и проверен.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+server/lib/
+server/venv/
+build.sh
+*.mcpb

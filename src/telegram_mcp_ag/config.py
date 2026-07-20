@@ -37,11 +37,16 @@ def _warn_if_not_locked_down(path: Path) -> None:
 
 
 def _has_session(env: dict) -> bool:
-    if env.get("TELEGRAM_SESSION_STRING") or env.get("TELEGRAM_SESSION_NAME"):
-        return True
+    # A key that exists but holds a blank value is not a session: see the note
+    # about empty form fields in load().
     return any(
-        key.startswith(SESSION_STRING_PREFIX) or key.startswith(SESSION_NAME_PREFIX)
-        for key in env
+        (
+            key in ("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME")
+            or key.startswith(SESSION_STRING_PREFIX)
+            or key.startswith(SESSION_NAME_PREFIX)
+        )
+        and str(value).strip()
+        for key, value in env.items()
     )
 
 
@@ -57,10 +62,16 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
         for key, value in dotenv_values(config_path).items():
-            if value is not None:
-                os.environ.setdefault(key, value)
+            if value is None:
+                continue
+            # Not setdefault: the .mcpb bundle runs under Claude Desktop, which
+            # substitutes an empty string for any form field the user left
+            # blank. Treating "" as a real value would let a blank form shadow
+            # config.env and make working credentials look missing.
+            if not os.environ.get(key, "").strip():
+                os.environ[key] = value
 
-    missing = [name for name in REQUIRED_VARS if not os.environ.get(name)]
+    missing = [name for name in REQUIRED_VARS if not os.environ.get(name, "").strip()]
     if missing:
         raise ConfigError(
             "Missing Telegram credentials: "
@@ -76,7 +87,7 @@ def load(config_path: Path = CONFIG_PATH) -> None:
         )
 
     try:
-        int(os.environ["TELEGRAM_API_ID"])
+        int(os.environ["TELEGRAM_API_ID"].strip())
     except ValueError:
         raise ConfigError(
             f"TELEGRAM_API_ID must be a number, got {os.environ['TELEGRAM_API_ID']!r}."

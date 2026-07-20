@@ -53,6 +53,33 @@ def test_env_vars_take_priority_over_file(tmp_path, monkeypatch):
     assert os.environ["TELEGRAM_SESSION_STRING"] == "session-from-env"
 
 
+def test_blank_env_vars_fall_back_to_file(tmp_path, monkeypatch):
+    # Claude Desktop runs the .mcpb bundle with every user_config field
+    # substituted, so a field the user left blank arrives as an empty string.
+    monkeypatch.setenv("TELEGRAM_API_ID", "")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "   ")
+    config_path = _write_config(
+        tmp_path / "config.env",
+        TELEGRAM_API_ID="123",
+        TELEGRAM_API_HASH="hash-from-file",
+        TELEGRAM_SESSION_STRING="session-from-file",
+    )
+
+    config.load(config_path)
+
+    assert os.environ["TELEGRAM_API_ID"] == "123"
+    assert os.environ["TELEGRAM_API_HASH"] == "hash-from-file"
+
+
+def test_blank_session_var_does_not_count_as_a_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_API_ID", "1")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING", "")
+
+    with pytest.raises(config.ConfigError, match="No Telegram session"):
+        config.load(tmp_path / "missing.env")
+
+
 def test_missing_file_is_not_an_error_when_env_is_complete(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
