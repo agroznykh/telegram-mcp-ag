@@ -4,10 +4,16 @@ These never touch the network or a Telegram account; they just make sure
 install.sh / install.ps1 parse cleanly. The linters (shellcheck,
 PSScriptAnalyzer) are skipped locally when not installed and run for real
 in CI, which has them preinstalled on the relevant OS images.
+
+install.sh targets macOS/Linux, so its checks are skipped on Windows: the
+"bash" on the Windows runner's PATH is the WSL launcher stub, not a real
+shell, and fails with "no installed distributions" rather than anything
+about the script.
 """
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,16 +22,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
+not_windows = pytest.mark.skipif(sys.platform == "win32", reason="install.sh targets macOS/Linux")
+
 
 def _powershell_executable():
     return shutil.which("pwsh") or shutil.which("powershell")
 
 
+@not_windows
 def test_install_sh_has_valid_bash_syntax():
     result = subprocess.run(["bash", "-n", str(INSTALL_SH)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
+@not_windows
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
 def test_install_sh_passes_shellcheck():
     result = subprocess.run(["shellcheck", str(INSTALL_SH)], capture_output=True, text=True)
