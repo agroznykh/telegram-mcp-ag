@@ -130,7 +130,7 @@ Telegram позволяет одной и той же сессии входа р
 **macOS и Linux:**
 
 ```bash
-bash install.sh --relogin
+curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh -o install.sh && bash install.sh --relogin
 ```
 
 **Windows** (сначала скачайте файл, затем запустите с флагом):
@@ -147,7 +147,7 @@ iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps
 
 macOS и Linux:
 ```bash
-bash install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh -o install.sh && bash install.sh --uninstall
 ```
 
 Windows (сначала скачайте файл, затем запустите с флагом):
