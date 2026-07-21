@@ -95,3 +95,19 @@ python3 -m venv .venv
 ```
 
 Тесты не ходят в сеть и не требуют Telegram-сессии.
+
+## Релиз
+
+Версия зашита в нескольких местах, и они не выводятся друг из друга — при бампе
+обновлять все сразу:
+
+- `pyproject.toml` (`version`)
+- `src/telegram_mcp_ag/__init__.py` (`__version__`)
+- `mcpb/pyproject.toml` (`version`)
+- `mcpb/manifest.json` (`version`)
+- `mcpb/uv.lock` (запись `version` для пакета `telegram-mcp-ag`)
+
+`mcpb/build.sh` сверяет `pyproject.toml` с `manifest.json` и падает при
+расхождении, но `mcpb/uv.lock` и `__init__.py` эта проверка не покрывает —
+их надо ставить в соответствие вручную. После бампа собрать бандл
+(`bash mcpb/build.sh`) локально, чтобы поймать несовпадение до релиза.
