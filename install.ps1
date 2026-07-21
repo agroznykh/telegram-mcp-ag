@@ -79,6 +79,8 @@ $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
 $script:MaintenanceVenvs = New-Object System.Collections.Generic.List[string]
+# Set by Request-AutoApprove(), read by Register-ClaudeCode()/Register-Codex().
+$script:AutoApproveTools = $false
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -285,6 +287,17 @@ function Read-ApiCredentials {
     return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
+function Request-AutoApprove {
+    Write-Host ''
+    Write-Info 'Сервер умеет только читать Telegram -- отправка сообщений и другие'
+    Write-Info 'изменяющие действия физически недоступны, независимо от ответа ниже.'
+    if (Confirm-Action 'Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?') {
+        return $true
+    }
+    Write-Info 'Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента.'
+    return $false
+}
+
 function Invoke-TelegramLogin {
     param([string]$ApiId, [string]$ApiHash, [switch]$Qr, [switch]$Phone)
 
@@ -430,6 +443,10 @@ function Register-ClaudeCode {
     claude mcp add -s user $ServerName -- (Get-VenvServerExe) *> $null
     if ($LASTEXITCODE -eq 0) {
         Write-Ok 'Claude Code настроен (scope: user).'
+        if ($script:AutoApproveTools) {
+            $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
+            Update-ClaudeSettingsPermission -SettingsPath $settingsPath -Action 'add'
+        }
     } else {
         Write-Warn "Не удалось зарегистрировать сервер в Claude Code. Добавьте вручную: claude mcp add -s user $ServerName -- $(Get-VenvServerExe)"
     }
@@ -495,6 +512,46 @@ if servers is not None and server_name in servers:
         f.write(tomlkit.dumps(doc))
 '@
 
+$script:ClaudeSettingsPermissionScript = @'
+import json
+import sys
+
+path, rule, action = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    data = {}
+
+allow = data.setdefault("permissions", {}).setdefault("allow", [])
+if action == "add":
+    if rule not in allow:
+        allow.append(rule)
+else:
+    data["permissions"]["allow"] = [r for r in allow if r != rule]
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+'@
+
+$script:CodexTomlSetApprovalScript = @'
+import sys
+import tomlkit
+
+config_path, server_name = sys.argv[1], sys.argv[2]
+
+with open(config_path, "r", encoding="utf-8") as f:
+    doc = tomlkit.parse(f.read())
+
+servers = doc.get("mcp_servers")
+if servers is not None and server_name in servers:
+    servers[server_name]["default_tools_approval_mode"] = "approve"
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(tomlkit.dumps(doc))
+'@
+
 $script:ClaudeDesktopJsonUpsertScript = @'
 import json
 import sys
@@ -537,6 +594,53 @@ function Invoke-PythonEdit {
     return ($LASTEXITCODE -eq 0)
 }
 
+# Adds or removes "mcp__$ServerName" in the top-level permissions.allow array
+# of a Claude Code settings.json (user-scope by default -- matches the
+# `-s user` registration). $Action is "add" or "remove"; safe either way.
+function Update-ClaudeSettingsPermission {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
+    param([string]$SettingsPath, [string]$Action)
+
+    $py = Get-MaintenancePython
+    if (-not $py) {
+        Write-Warn "Не нашёл Python для правки $SettingsPath, пропускаю."
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $SettingsPath) | Out-Null
+    if (Test-Path $SettingsPath) {
+        Copy-Item -Path $SettingsPath -Destination "$SettingsPath.bak-$(Get-Date -Format 'yyyyMMddHHmmss')"
+    }
+
+    $ok = Invoke-PythonEdit -PythonExe $py -ScriptBody $script:ClaudeSettingsPermissionScript `
+        -Arguments @($SettingsPath, "mcp__$ServerName", $Action)
+    if ($ok -and $Action -eq 'add') {
+        Write-Ok "Claude Code: разрешение на инструменты чтения добавлено ($SettingsPath)."
+    }
+}
+
+# `codex mcp add` has no flag for this, so it's always a follow-up TOML edit,
+# whichever way the server entry itself got created. Requires the
+# [mcp_servers.$ServerName] table to already exist.
+function Set-CodexApproval {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
+    param([string]$CodexConfig)
+
+    $py = Get-MaintenancePython
+    if (-not $py) {
+        Write-Warn "Не нашёл Python для правки $CodexConfig, пропускаю разрешение автозапуска."
+        return
+    }
+    & $py -m pip install -q tomlkit
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Не удалось установить tomlkit, пропускаю разрешение автозапуска."
+        return
+    }
+
+    $ok = Invoke-PythonEdit -PythonExe $py -ScriptBody $script:CodexTomlSetApprovalScript -Arguments @($CodexConfig, $ServerName)
+    if ($ok) { Write-Ok "Codex: разрешение на инструменты чтения добавлено ($CodexConfig)." }
+}
+
 function Update-CodexToml {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
     param([string]$CodexConfig)
@@ -577,12 +681,15 @@ function Register-Codex {
         codex mcp add $ServerName -- (Get-VenvServerExe) *> $null
         if ($LASTEXITCODE -eq 0) {
             Write-Ok "Codex настроен через 'codex mcp add'."
+            if ($script:AutoApproveTools) { Set-CodexApproval -CodexConfig $codexConfig }
             return
         }
         Write-Warn "'codex mcp add' не сработал (команда экспериментальная), правлю $codexConfig напрямую."
     }
 
-    if (-not (Update-CodexToml -CodexConfig $codexConfig)) {
+    if (Update-CodexToml -CodexConfig $codexConfig) {
+        if ($script:AutoApproveTools) { Set-CodexApproval -CodexConfig $codexConfig }
+    } else {
         Write-Warn 'Codex/ChatGPT Desktop не настроены автоматически. Смотрите examples/codex.config.toml.'
     }
 }
@@ -607,8 +714,44 @@ function Register-ClaudeDesktop {
         -Arguments @($target, (Get-VenvServerExe), $ServerName)
     if ($ok) {
         Write-Ok "Claude Desktop настроен ($target). Перезапустите приложение, чтобы изменения применились."
+        if ($script:AutoApproveTools) {
+            Write-Info 'У Claude Desktop нет способа разрешить это заранее -- при первом вызове инструмента нажмите "Always Allow".'
+        }
     } else {
         Write-Warn 'Claude Desktop не настроен автоматически. Добавьте сервер вручную по примеру examples/claude-code.mcp.json.'
+    }
+}
+
+# Claude Code and Claude Desktop both read personal skills from
+# ~/.claude/skills/ -- copying ours there (from the same ref the package
+# itself was installed from) is what makes "подключи Telegram" and "сделай
+# сводку" work as a skill in *any* project on this machine, not just when
+# working inside a checkout of this repo.
+function Install-ClaudeSkill {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
+    param([string]$Name)
+
+    $dest = Join-Path $env:USERPROFILE ".claude\skills\$Name"
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/$Name/SKILL.md"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile (Join-Path $dest 'SKILL.md') -ErrorAction Stop
+        Write-Ok "Скилл «$Name» установлен ($dest)."
+    } catch {
+        Write-Warn "Не удалось скачать скилл «$Name» -- не критично, остальное работает и без него."
+        Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-ClaudeSkills {
+    $haveClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
+    $claudeDesktopDir = Join-Path $env:APPDATA 'Claude'
+    if (Test-Path $claudeDesktopDir) { $haveClaude = $true }
+    if (-not $haveClaude) { return }
+
+    Write-Info 'Устанавливаю скиллы Claude (сводка по Telegram, повторный вход)...'
+    foreach ($name in @('telegram-digest', 'setup-telegram-mcp')) {
+        Install-ClaudeSkill -Name $name
     }
 }
 
@@ -727,6 +870,13 @@ function Invoke-Uninstall {
     if (Get-Command claude -ErrorAction SilentlyContinue) {
         claude mcp remove -s user $ServerName *> $null
         if ($LASTEXITCODE -eq 0) { Write-Ok 'Claude Code: сервер удалён.' }
+        $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
+        Update-ClaudeSettingsPermission -SettingsPath $settingsPath -Action 'remove'
+    }
+
+    foreach ($name in @('telegram-digest', 'setup-telegram-mcp')) {
+        $skillDir = Join-Path $env:USERPROFILE ".claude\skills\$name"
+        if (Test-Path $skillDir) { Remove-Item -Recurse -Force $skillDir }
     }
 
     $codexConfig = Join-Path $env:USERPROFILE '.codex\config.toml'
@@ -783,10 +933,12 @@ function Invoke-Main {
         Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash -SessionVar $session.Var -SessionValue $session.Value
     }
 
+    $script:AutoApproveTools = Request-AutoApprove
+
     # Each step degrades independently: a client that isn't installed, or
     # an unexpected error registering one of them, must not stop the rest
     # from being tried -- mirrors install.sh's per-client resilience.
-    foreach ($step in @('Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Invoke-SelfCheck')) {
+    foreach ($step in @('Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Install-ClaudeSkills', 'Invoke-SelfCheck')) {
         try {
             & $step
         } catch {

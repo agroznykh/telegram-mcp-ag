@@ -33,6 +33,9 @@ SESSION_STRING=""
 OS=""
 ARCH=""
 
+# Set by prompt_auto_approve(), read by register_claude_code()/register_codex().
+AUTO_APPROVE_TOOLS=0
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -232,6 +235,18 @@ prompt_api_credentials() {
     done
 }
 
+prompt_auto_approve() {
+    echo
+    info "Сервер умеет только читать Telegram -- отправка сообщений и другие"
+    info "изменяющие действия физически недоступны, независимо от ответа ниже."
+    if confirm "Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?"; then
+        AUTO_APPROVE_TOOLS=1
+    else
+        AUTO_APPROVE_TOOLS=0
+        info "Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента."
+    fi
+}
+
 run_telegram_login() {
     echo
     info "Вход в Telegram: сейчас появится QR-код."
@@ -324,8 +339,54 @@ register_claude_code() {
     claude mcp remove -s user "$SERVER_NAME" >/dev/null 2>&1 || true
     if claude mcp add -s user "$SERVER_NAME" -- "$VENV_DIR/bin/telegram-mcp-ag" >/dev/null; then
         ok "Claude Code настроен (scope: user)."
+        if [[ "$AUTO_APPROVE_TOOLS" -eq 1 ]]; then
+            _claude_settings_permission_set "$HOME/.claude/settings.json" add
+        fi
     else
         warn "Не удалось зарегистрировать сервер в Claude Code. Добавьте вручную: claude mcp add -s user $SERVER_NAME -- $VENV_DIR/bin/telegram-mcp-ag"
+    fi
+}
+
+# Adds or removes "mcp__$SERVER_NAME" in the top-level permissions.allow array
+# of a Claude Code settings.json (user-scope by default -- matches the
+# `-s user` registration above). $2 is "add" or "remove"; safe to call
+# repeatedly either way.
+_claude_settings_permission_set() {
+    local settings_path="$1" action="$2" py=""
+    py="$(_maintenance_python)"
+    if [[ -z "$py" ]]; then
+        warn "Не нашёл Python для правки $settings_path, пропускаю."
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$settings_path")"
+    [[ -f "$settings_path" ]] && cp "$settings_path" "$settings_path.bak-$(date +%Y%m%d%H%M%S)"
+
+    "$py" - "$settings_path" "mcp__$SERVER_NAME" "$action" <<'PYEOF'
+import json
+import sys
+
+path, rule, action = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    data = {}
+
+allow = data.setdefault("permissions", {}).setdefault("allow", [])
+if action == "add":
+    if rule not in allow:
+        allow.append(rule)
+else:
+    data["permissions"]["allow"] = [r for r in allow if r != rule]
+
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PYEOF
+    if [[ "$action" == "add" ]]; then
+        ok "Claude Code: разрешение на инструменты чтения добавлено ($settings_path)."
     fi
 }
 
@@ -398,6 +459,39 @@ PYEOF
     ok "config.toml обновлён ($codex_config)."
 }
 
+# `codex mcp add` has no flag for this, so it's always a follow-up TOML edit,
+# whichever way the server entry itself got created. Requires the
+# [mcp_servers.$SERVER_NAME] table to already exist.
+_codex_toml_set_approval() {
+    local codex_config="$1" py=""
+    py="$(_maintenance_python)"
+    if [[ -z "$py" ]]; then
+        warn "Не нашёл Python для правки $codex_config, пропускаю разрешение автозапуска."
+        return 1
+    fi
+    "$py" -m pip install -q tomlkit || {
+        warn "Не удалось установить tomlkit, пропускаю разрешение автозапуска."
+        return 1
+    }
+
+    "$py" - "$codex_config" "$SERVER_NAME" <<'PYEOF'
+import sys
+import tomlkit
+
+config_path, server_name = sys.argv[1], sys.argv[2]
+
+with open(config_path, "r", encoding="utf-8") as f:
+    doc = tomlkit.parse(f.read())
+
+servers = doc.get("mcp_servers")
+if servers is not None and server_name in servers:
+    servers[server_name]["default_tools_approval_mode"] = "approve"
+    with open(config_path, "w", encoding="utf-8") as f:
+        f.write(tomlkit.dumps(doc))
+PYEOF
+    ok "Codex: разрешение на инструменты чтения добавлено ($codex_config)."
+}
+
 register_codex() {
     local codex_dir="$HOME/.codex"
     local codex_config="$codex_dir/config.toml"
@@ -411,12 +505,19 @@ register_codex() {
         codex mcp remove "$SERVER_NAME" >/dev/null 2>&1 || true
         if codex mcp add "$SERVER_NAME" -- "$VENV_DIR/bin/telegram-mcp-ag" >/dev/null 2>&1; then
             ok "Codex настроен через 'codex mcp add'."
+            if [[ "$AUTO_APPROVE_TOOLS" -eq 1 ]]; then
+                _codex_toml_set_approval "$codex_config"
+            fi
             return 0
         fi
         warn "'codex mcp add' не сработал (команда экспериментальная), правлю $codex_config напрямую."
     fi
 
-    _codex_toml_upsert "$codex_config" || warn "Codex/ChatGPT Desktop не настроены автоматически. Смотрите examples/codex.config.toml."
+    if _codex_toml_upsert "$codex_config"; then
+        [[ "$AUTO_APPROVE_TOOLS" -eq 1 ]] && _codex_toml_set_approval "$codex_config"
+    else
+        warn "Codex/ChatGPT Desktop не настроены автоматически. Смотрите examples/codex.config.toml."
+    fi
 }
 
 _claude_desktop_candidates() {
@@ -470,9 +571,44 @@ register_claude_desktop() {
     info "Обнаружен Claude Desktop -- регистрирую сервер..."
     if _claude_desktop_json_upsert "$target"; then
         ok "Claude Desktop настроен ($target). Перезапустите приложение, чтобы изменения применились."
+        if [[ "$AUTO_APPROVE_TOOLS" -eq 1 ]]; then
+            info "У Claude Desktop нет способа разрешить это заранее -- при первом вызове инструмента нажмите \"Always Allow\"."
+        fi
     else
         warn "Claude Desktop не настроен автоматически. Добавьте сервер вручную по примеру examples/claude-code.mcp.json."
     fi
+}
+
+# Claude Code and Claude Desktop both read personal skills from
+# ~/.claude/skills/ -- copying ours there (from the same ref the package
+# itself was installed from) is what makes "подключи Telegram" and "сделай
+# сводку" work as a skill in *any* project on this machine, not just when
+# working inside a checkout of this repo.
+_install_claude_skill() {
+    local name="$1" dest="$HOME/.claude/skills/$1"
+    mkdir -p "$dest"
+    if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/$name/SKILL.md" \
+        -o "$dest/SKILL.md" 2>/dev/null; then
+        ok "Скилл «$name» установлен ($dest)."
+    else
+        warn "Не удалось скачать скилл «$name» -- не критично, остальное работает и без него."
+        rm -rf "$dest"
+    fi
+}
+
+install_claude_skills() {
+    local have_claude=0 dir=""
+    command -v claude >/dev/null 2>&1 && have_claude=1
+    while IFS= read -r dir; do
+        [[ -d "$dir" ]] && have_claude=1
+    done < <(_claude_desktop_candidates)
+    [[ "$have_claude" -eq 0 ]] && return 0
+
+    info "Устанавливаю скиллы Claude (сводка по Telegram, повторный вход)..."
+    local name=""
+    for name in telegram-digest setup-telegram-mcp; do
+        _install_claude_skill "$name"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -604,6 +740,12 @@ do_uninstall() {
         if claude mcp remove -s user "$SERVER_NAME" >/dev/null 2>&1; then
             ok "Claude Code: сервер удалён."
         fi
+        _claude_settings_permission_set "$HOME/.claude/settings.json" remove
+    fi
+
+    if [[ -d "$HOME/.claude/skills/telegram-digest" || -d "$HOME/.claude/skills/setup-telegram-mcp" ]]; then
+        rm -rf "$HOME/.claude/skills/telegram-digest" "$HOME/.claude/skills/setup-telegram-mcp"
+        ok "Скиллы Claude удалены."
     fi
 
     if command -v codex >/dev/null 2>&1; then
@@ -691,9 +833,11 @@ main() {
         write_config_env
     fi
 
+    prompt_auto_approve
     register_claude_code
     register_codex
     register_claude_desktop
+    install_claude_skills
     self_check
     print_summary
 }
