@@ -90,6 +90,13 @@ DEFAULT_MAX_CHUNK_DURATION = 180
 DEFAULT_MAX_CHUNK_MESSAGES = 6
 DEFAULT_MAX_RUNTIME_SECONDS = 100
 DEFAULT_REQUEST_TIMEOUT = 30
+# Telegram doesn't always have a transcription ready by the first poll, even
+# after the request succeeds (`pending=True` in the response). 2 retries at
+# 1.5s wasn't always enough in practice -- short clips have come back still
+# pending after ~8s of waiting; 4 retries at 2s gives more room before the
+# caller has to poll again itself.
+DEFAULT_RETRY_COUNT = 4
+DEFAULT_RETRY_DELAY = 2.0
 
 # What Telegram's native transcription actually handles today. Regular videos
 # and plain documents (even ones that happen to contain audio) come back as
@@ -369,8 +376,8 @@ async def check_transcription_access(account: str = None) -> str:
 async def transcribe_voice_messages(
     chat_id: Union[int, str],
     message_ids: List[int],
-    retry_count: int = 2,
-    retry_delay: float = 1.5,
+    retry_count: int = DEFAULT_RETRY_COUNT,
+    retry_delay: float = DEFAULT_RETRY_DELAY,
     max_chunk_duration: int = DEFAULT_MAX_CHUNK_DURATION,
     max_chunk_messages: int = DEFAULT_MAX_CHUNK_MESSAGES,
     max_runtime_seconds: int = DEFAULT_MAX_RUNTIME_SECONDS,
@@ -561,34 +568,6 @@ async def transcribe_voice_messages(
         return log_and_format_error(
             "transcribe_voice_messages", exc, chat_id=chat_id, message_ids=message_ids
         )
-
-
-@mcp.tool(
-    annotations=ToolAnnotations(
-        title="Transcribe Voice Message",
-        openWorldHint=True,
-        readOnlyHint=True,
-    )
-)
-@with_account(readonly=True)
-@validate_id("chat_id")
-async def transcribe_voice_message(
-    chat_id: Union[int, str],
-    message_id: int,
-    retry_count: int = 2,
-    retry_delay: float = 1.5,
-    request_timeout: int = DEFAULT_REQUEST_TIMEOUT,
-    account: str = None,
-) -> str:
-    """Transcribe one Telegram voice, audio, or video-note message."""
-    return await transcribe_voice_messages(
-        chat_id=chat_id,
-        message_ids=[message_id],
-        retry_count=retry_count,
-        retry_delay=retry_delay,
-        request_timeout=request_timeout,
-        account=account,
-    )
 
 
 async def _activate_reading_tools() -> str:
