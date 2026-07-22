@@ -785,8 +785,9 @@ print_help() {
 Использование: install.sh [--relogin | --uninstall]
 
   (без флагов)  Установить или обновить telegram-mcp-ag.
-  --relogin     Переустановить пакет и заново войти в Telegram,
-                даже если config.env уже существует.
+  --relogin     Войти в Telegram заново (например, если сессия отозвана
+                вручную в Settings -> Devices) -- даже если config.env
+                уже существует.
   --uninstall   Снять регистрации из клиентов и предложить удалить
                 папку $INSTALL_DIR.
   -h, --help    Показать эту справку.

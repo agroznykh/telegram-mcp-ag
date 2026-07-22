@@ -14,7 +14,8 @@
     never opened a terminal before (see CLAUDE.md). Code comments are English.
 
 .PARAMETER Relogin
-    Redo the Telegram login even if config.env already exists.
+    Redo the Telegram login (e.g. after the session was revoked manually in
+    Settings -> Devices), even if config.env already exists.
 
 .PARAMETER Uninstall
     Remove client registrations and offer to delete the install directory.
