@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/inst
 **Windows** — вставьте в PowerShell:
 
 ```powershell
-iex (irm 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1')
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f
 ```
 
 После установки перезапустите то приложение, которым пользуетесь (если оно
@@ -130,14 +130,13 @@ Telegram позволяет одной и той же сессии входа р
 **macOS и Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh -o install.sh && bash install.sh --relogin
+curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash -s -- --relogin
 ```
 
-**Windows** (сначала скачайте файл, затем запустите с флагом):
+**Windows:**
 
 ```powershell
-iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile install.ps1
-.\install.ps1 -Relogin
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f -Relogin
 ```
 
 ## Как удалить
@@ -147,13 +146,12 @@ iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps
 
 macOS и Linux:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh -o install.sh && bash install.sh --uninstall
+curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash -s -- --uninstall
 ```
 
-Windows (сначала скачайте файл, затем запустите с флагом):
+Windows:
 ```powershell
-iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile install.ps1
-.\install.ps1 -Uninstall
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f -Uninstall
 ```
 
 **Если ставили Claude Desktop через `.mcpb`-бандл:** откройте Claude Desktop →
