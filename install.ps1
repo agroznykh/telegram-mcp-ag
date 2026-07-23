@@ -76,6 +76,9 @@ $RepoRef = Resolve-RepoRef
 # Path.home() on Windows resolves via USERPROFILE, same as this.
 $InstallDir = Join-Path $env:USERPROFILE 'telegram-mcp-ag'
 $VenvDir = Join-Path $InstallDir '.venv'
+# Initialize-PythonAndVenv/Install-ServerPackage build here, not in $VenvDir
+# directly -- see Complete-VenvSwap for why.
+$VenvStagingDir = Join-Path $InstallDir '.venv.new'
 $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
@@ -212,26 +215,30 @@ function Initialize-PythonAndVenv {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Set-Location $InstallDir
 
-    if (Test-Path $VenvDir) {
-        Remove-Item -Recurse -Force $VenvDir
+    # Built next to the real venv, not in place: if pip install below fails
+    # (network hiccup, most commonly), the script exits before
+    # Complete-VenvSwap ever runs, so a working install is never left
+    # half-destroyed -- only replaced once the replacement is proven to work.
+    if (Test-Path $VenvStagingDir) {
+        Remove-Item -Recurse -Force $VenvStagingDir
     }
 
     if ($pyCmd) {
         Write-Info "Создаю виртуальное окружение ($($pyCmd -join ' '))..."
-        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvDir)
+        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvStagingDir)
         if ($LASTEXITCODE -ne 0) {
             Write-Failure 'Не удалось создать виртуальное окружение.'
             exit 1
         }
     } else {
         Write-Info 'Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)...'
-        uv venv --seed --python 3.12 $VenvDir | Out-Null
+        uv venv --seed --python 3.12 $VenvStagingDir | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Failure 'Не удалось создать виртуальное окружение через uv.'
             exit 1
         }
     }
-    Write-Ok "Окружение готово: $VenvDir"
+    Write-Ok 'Окружение готово.'
 }
 
 function Get-VenvPython { Join-Path $VenvDir 'Scripts\python.exe' }
@@ -240,7 +247,7 @@ function Get-VenvGenerateSessionExe { Join-Path $VenvDir 'Scripts\telegram-mcp-g
 
 function Install-ServerPackage {
     Write-Info "Устанавливаю telegram-mcp-ag (ref: $RepoRef)..."
-    $py = Get-VenvPython
+    $py = Join-Path $VenvStagingDir 'Scripts\python.exe'
     & $py -m pip install --upgrade pip -q
     & $py -m pip install -q "git+$RepoUrl@$RepoRef"
     if ($LASTEXITCODE -ne 0) {
@@ -248,6 +255,19 @@ function Install-ServerPackage {
         exit 1
     }
     Write-Ok 'Пакет установлен.'
+}
+
+# The only place the previous, working $VenvDir is destroyed -- only reached
+# once venv creation and the pip install above have both already succeeded,
+# so a mid-install failure (most commonly a network hiccup during pip
+# install) leaves whatever was working before completely untouched instead
+# of trading a working server for "Failed to spawn process" in Claude
+# Desktop until the user notices and reruns this script.
+function Complete-VenvSwap {
+    if (Test-Path $VenvDir) {
+        Remove-Item -Recurse -Force $VenvDir
+    }
+    Move-Item -Path $VenvStagingDir -Destination $VenvDir
 }
 
 # ---------------------------------------------------------------------------
@@ -964,6 +984,7 @@ function Invoke-Main {
 
     Initialize-PythonAndVenv
     Install-ServerPackage
+    Complete-VenvSwap
 
     if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
         Write-Info "Найден существующий $ConfigPath -- использую его без повторного входа."

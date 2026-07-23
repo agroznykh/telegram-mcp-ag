@@ -20,6 +20,9 @@ REPO_REF=""
 # configurable, so this path cannot be overridden here either.
 INSTALL_DIR="$HOME/telegram-mcp-ag"
 VENV_DIR="$INSTALL_DIR/.venv"
+# setup_python_and_venv()/install_package() build here, not in $VENV_DIR
+# directly -- see _activate_new_venv() for why.
+VENV_STAGING_DIR="$VENV_DIR.new"
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
@@ -185,22 +188,37 @@ setup_python_and_venv() {
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 
-    rm -rf "$VENV_DIR"
+    # Built next to the real venv, not in place: if pip install below fails
+    # (network hiccup, most commonly), set -e aborts before
+    # _activate_new_venv() ever runs, so a working install is never left
+    # half-destroyed -- only replaced once the replacement is proven to work.
+    rm -rf "$VENV_STAGING_DIR"
     if [[ -n "$py" ]]; then
         info "Создаю виртуальное окружение ($py)..."
-        "$py" -m venv "$VENV_DIR"
+        "$py" -m venv "$VENV_STAGING_DIR"
     else
         info "Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)..."
-        uv venv --seed --python 3.12 "$VENV_DIR" >/dev/null
+        uv venv --seed --python 3.12 "$VENV_STAGING_DIR" >/dev/null
     fi
-    ok "Окружение готово: $VENV_DIR"
+    ok "Окружение готово."
 }
 
 install_package() {
     info "Устанавливаю telegram-mcp-ag (ref: $REPO_REF)..."
-    "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
-    "$VENV_DIR/bin/python" -m pip install -q "git+${REPO_URL}@${REPO_REF}"
+    "$VENV_STAGING_DIR/bin/python" -m pip install --upgrade pip -q
+    "$VENV_STAGING_DIR/bin/python" -m pip install -q "git+${REPO_URL}@${REPO_REF}"
     ok "Пакет установлен."
+}
+
+# The only place the previous, working $VENV_DIR is destroyed -- only reached
+# once venv creation and the pip install above have both already succeeded,
+# so a mid-install failure (most commonly a network hiccup during pip
+# install) leaves whatever was working before completely untouched instead
+# of trading a working server for "Failed to spawn process: No such file or
+# directory" in Claude Desktop until the user notices and reruns this script.
+_activate_new_venv() {
+    rm -rf "$VENV_DIR"
+    mv "$VENV_STAGING_DIR" "$VENV_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -858,6 +876,7 @@ main() {
 
     setup_python_and_venv
     install_package
+    _activate_new_venv
 
     if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
         info "Найден существующий $CONFIG_PATH -- использую его без повторного входа."
