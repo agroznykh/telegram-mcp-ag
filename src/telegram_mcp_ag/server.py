@@ -1,8 +1,10 @@
 """Telegram MCP launcher with safe, read-only voice transcription tools."""
 
 import asyncio
+import importlib
 import json
 import os
+import platform
 import shutil
 import sys
 import tempfile
@@ -11,7 +13,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Union
 
-from telethon.errors.rpcerrorlist import PremiumAccountRequiredError
+from telethon.errors.rpcerrorlist import (
+    AuthKeyInvalidError,
+    AuthKeyUnregisteredError,
+    PremiumAccountRequiredError,
+    SessionRevokedError,
+)
 from telethon.tl import functions
 
 from telegram_mcp_ag import config as _config
@@ -84,6 +91,91 @@ if _LOGIN_MODE:
     _install_login_client()
     _LOGIN_TOOLS = _login.register(mcp, ToolAnnotations, get_client)
     _login.set_activation_hook(lambda: _activate_reading_tools())
+
+
+# Revoking this device's session in Telegram (Settings -> Devices) or ending
+# all sessions at once doesn't raise anything a client sees directly: every
+# upstream tool catches its own exceptions and calls log_and_format_error(),
+# which -- without a user_message -- returns an opaque
+# "An error occurred (code: CHAT-ERR-606)" with zero indication that the fix
+# is a fresh login, not a retry. Patching log_and_format_error to recognize
+# these specific errors and fill in the exact --relogin command fixes this
+# for every tool and every MCP client at once (Claude, Codex, ChatGPT...),
+# rather than depending on a skill being installed or its description
+# happening to match the user's phrasing.
+#
+# `telegram_mcp.tools.*` each did `from telegram_mcp.runtime import *` at
+# their own import time, so every submodule holds its own separate name
+# binding for log_and_format_error -- patching telegram_mcp.runtime alone
+# would not reach any of them. Best effort: a module missing the attribute
+# (future upstream restructuring) is skipped rather than failing the server.
+_RELOGIN_SESSION_ERRORS = (AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError)
+
+_RELOGIN_CMD_MAC_LINUX = (
+    "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh"
+    " | bash -s -- --relogin"
+)
+_RELOGIN_CMD_WINDOWS = (
+    '$f = "$env:TEMP\\telegram-mcp-ag-install.ps1"; '
+    "iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'"
+    " -OutFile $f; & $f -Relogin"
+)
+
+
+def _relogin_instructions() -> str:
+    system = platform.system()
+    if system == "Darwin" or system == "Linux":
+        return f"Выполните на этой машине в терминале: {_RELOGIN_CMD_MAC_LINUX}"
+    if system == "Windows":
+        return f"Выполните на этой машине в PowerShell: {_RELOGIN_CMD_WINDOWS}"
+    return (
+        "Не удалось определить ОС этой машины, выберите нужную команду -- "
+        f"macOS/Linux (терминал): {_RELOGIN_CMD_MAC_LINUX} -- "
+        f"Windows (PowerShell): {_RELOGIN_CMD_WINDOWS}"
+    )
+
+
+def _relogin_user_message(error: BaseException) -> Optional[str]:
+    if isinstance(error, _RELOGIN_SESSION_ERRORS):
+        return (
+            "Сессия Telegram для этого аккаунта отозвана (устройство удалено в "
+            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом) "
+            f"-- нужно подключить аккаунт заново. {_relogin_instructions()}"
+        )
+    return None
+
+
+def _patch_log_and_format_error():
+    original = _runtime.log_and_format_error
+
+    def patched(function_name, error, prefix=None, user_message=None, **kwargs):
+        if user_message is None:
+            user_message = _relogin_user_message(error)
+        return original(function_name, error, prefix=prefix, user_message=user_message, **kwargs)
+
+    _runtime.log_and_format_error = patched
+    for _mod_name in (
+        "accounts",
+        "chats",
+        "contacts",
+        "events",
+        "folders",
+        "groups",
+        "media",
+        "messages",
+        "profile",
+    ):
+        try:
+            _mod = importlib.import_module(f"telegram_mcp.tools.{_mod_name}")
+        except ImportError:
+            continue
+        if hasattr(_mod, "log_and_format_error"):
+            _mod.log_and_format_error = patched
+
+    return patched
+
+
+log_and_format_error = _patch_log_and_format_error()
 
 
 DEFAULT_MAX_CHUNK_DURATION = 180
