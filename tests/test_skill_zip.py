@@ -17,7 +17,12 @@ def test_skill_zip_matches_source():
         assert zf.namelist() == ["telegram-digest/SKILL.md"]
         zipped = zf.read("telegram-digest/SKILL.md")
 
-    assert zipped == SKILL_MD.read_bytes(), (
+    # Compare modulo line endings: build_zip.py always writes LF (matching
+    # the git blob raw.githubusercontent.com serves), but a checkout on a
+    # CI runner with core.autocrlf on (e.g. windows-latest) rewrites the
+    # working-tree SKILL.md to CRLF -- that's a checkout artifact, not a
+    # real mismatch between the zip and its source.
+    assert zipped.replace(b"\r\n", b"\n") == SKILL_MD.read_bytes().replace(b"\r\n", b"\n"), (
         "telegram-digest.zip is stale -- rerun "
         "'python3 .claude/skills/build_zip.py' after editing SKILL.md"
     )
