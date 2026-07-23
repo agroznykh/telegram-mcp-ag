@@ -7,7 +7,7 @@
 
 [project]
 name = "telegram-mcp-ag-bundle"
-version = "0.2.3"
+version = "0.2.4"
 description = "MCPB bundle for telegram-mcp-ag"
 requires-python = ">=3.10"
 dependencies = [

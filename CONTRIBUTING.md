@@ -85,7 +85,7 @@ python3 .claude/skills/build_zip.py
      `transcribe_audio_trial_duration_max`, читаемые из `help.getAppConfig`.
 4. Прогоните `pytest`, затем пересоберите и вручную проверьте бандл `.mcpb`
    (`bash mcpb/build.sh`, установить локально, подключить настоящий аккаунт).
-5. Обновите SHA, упомянутый в `CLAUDE.md` и `PLAN.md`, если он там указан.
+5. Обновите SHA, упомянутый в `CLAUDE.md`, если он там указан.
 
 ## Скрипты установщиков
 

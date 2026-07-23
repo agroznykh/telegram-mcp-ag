@@ -7,8 +7,8 @@
     Finds or bootstraps Python 3.10+, creates a venv, installs the package,
     logs into Telegram, writes config.env, and registers the server with
     whichever of Claude Code / Codex CLI / ChatGPT Desktop / Claude Desktop
-    are present. Ports install.sh (macOS/Linux) -- see that file and
-    PLAN.md step 5 for the shared design notes.
+    are present. Ports install.sh (macOS/Linux) -- see that file for the
+    shared design notes.
 
     All user-facing text is Russian: this installer targets people who have
     never opened a terminal before (see CLAUDE.md). Code comments are English.
@@ -132,9 +132,8 @@ function Test-SupportedPlatform {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup (see PLAN.md decision 6: uv is an accelerator, not a
-# requirement -- system Python is always preferred when it already satisfies
-# the version floor).
+# Python / venv setup (uv is an accelerator, not a requirement -- system
+# Python is always preferred when it already satisfies the version floor).
 # ---------------------------------------------------------------------------
 
 function Test-PythonCommand {
@@ -315,7 +314,7 @@ function Invoke-TelegramLogin {
         $useQr = $true
     } elseif (-not $env:WT_SESSION) {
         # Legacy conhost (not Windows Terminal) frequently mangles the QR
-        # code's block characters -- PLAN.md step 5 flags this explicitly.
+        # code's block characters.
         Write-Warn 'Похоже, вы не в Windows Terminal -- QR-код в старой консоли часто отображается криво.'
         Write-Info 'Использую вход по номеру телефона. Чтобы всё равно попробовать QR: install.ps1 -Qr'
         $useQr = $false
@@ -759,7 +758,15 @@ function Install-ClaudeSkillZip {
     $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest.zip"
     try {
         Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
-        Write-Ok "Готовый архив скилла для Claude Desktop: $out"
+        # Also copy to Downloads -- that's where README tells users to look for
+        # it, since it's a folder every non-developer already knows how to find
+        # (unlike $InstallDir). -Force silently replaces a file left over from
+        # a previous run, never an error.
+        $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
+        New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
+        $downloadsOut = Join-Path $downloadsDir 'telegram-digest-skill.zip'
+        Copy-Item -Path $out -Destination $downloadsOut -Force -ErrorAction SilentlyContinue
+        Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $downloadsOut"
     } catch {
         Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
         Remove-Item -Force $out -ErrorAction SilentlyContinue
@@ -785,8 +792,7 @@ function Install-ClaudeSkills {
         } catch {
             Write-Warn 'Не удалось подготовить архив скилла -- не критично, остальное работает и без него.'
         }
-        $zipPath = Join-Path $InstallDir 'telegram-digest-skill.zip'
-        Write-Info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, загрузите $zipPath через Settings -> Customize -> Skills -> Upload a skill (подробности в README)."
+        Write-Info 'В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README).'
     }
 }
 

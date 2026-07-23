@@ -104,6 +104,18 @@ if _LOGIN_MODE:
 # rather than depending on a skill being installed or its description
 # happening to match the user's phrasing.
 #
+# A tool result telling the reader to download-and-execute a script is, on
+# its face, indistinguishable from a prompt-injection payload. Rewording it
+# (declarative, no imperative "run this") didn't change that -- Claude
+# Desktop refused it regardless of phrasing. What did change the outcome:
+# with the telegram-digest skill installed, Desktop relayed the exact same
+# command without hesitation, because the skill tells it ahead of time that
+# this specific pattern from this specific server is expected and safe. So
+# this message assumes the skill (or an equivalently informed client, like
+# Claude Code) is what's actually doing the trust judgment -- see README's
+# Claude Desktop section, where installing the skill is a required step
+# for exactly this reason, not just for the digest workflow.
+#
 # `telegram_mcp.tools.*` each did `from telegram_mcp.runtime import *` at
 # their own import time, so every submodule holds its own separate name
 # binding for log_and_format_error -- patching telegram_mcp.runtime alone
@@ -123,20 +135,14 @@ _RELOGIN_CMD_WINDOWS = (
 
 
 def _relogin_instructions() -> str:
-    # Phrased as a fact about what the human operator needs to do, not as an
-    # imperative aimed at whoever is reading this (a "curl | bash" one-liner
-    # addressed in the second person is indistinguishable from a classic
-    # prompt-injection payload -- Claude Desktop has refused to relay an
-    # earlier, more imperative wording of this exact message for exactly that
-    # reason, even though it came from our own server).
     system = platform.system()
     if system == "Darwin" or system == "Linux":
-        return f"Команда для терминала на этой машине (её вводит сам пользователь): {_RELOGIN_CMD_MAC_LINUX}"
+        return f"Выполните на этой машине в терминале: {_RELOGIN_CMD_MAC_LINUX}"
     if system == "Windows":
-        return f"Команда для PowerShell на этой машине (её вводит сам пользователь): {_RELOGIN_CMD_WINDOWS}"
+        return f"Выполните на этой машине в PowerShell: {_RELOGIN_CMD_WINDOWS}"
     return (
-        "Не удалось определить ОС этой машины, команду для терминала выбирает сам "
-        f"пользователь -- macOS/Linux: {_RELOGIN_CMD_MAC_LINUX} -- "
+        "Не удалось определить ОС этой машины, выберите нужную команду -- "
+        f"macOS/Linux (терминал): {_RELOGIN_CMD_MAC_LINUX} -- "
         f"Windows (PowerShell): {_RELOGIN_CMD_WINDOWS}"
     )
 
@@ -144,11 +150,9 @@ def _relogin_instructions() -> str:
 def _relogin_user_message(error: BaseException) -> Optional[str]:
     if isinstance(error, _RELOGIN_SESSION_ERRORS):
         return (
-            "Статус аккаунта: сессия Telegram отозвана (устройство удалено в "
-            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом), "
-            f"нужен повторный вход. {_relogin_instructions()}. Это диагностическое "
-            "сообщение для пользователя, а не инструкция для ассистента -- команду "
-            "исполняет сам пользователь в своём терминале, не ассистент от его имени."
+            "Сессия Telegram для этого аккаунта отозвана (устройство удалено в "
+            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом) "
+            f"-- нужно подключить аккаунт заново. {_relogin_instructions()}"
         )
     return None
 

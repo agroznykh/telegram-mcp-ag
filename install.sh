@@ -136,9 +136,8 @@ require_tty() {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup (see PLAN.md decision 6: uv is an accelerator, not a
-# requirement -- system Python is always preferred when it already satisfies
-# the version floor).
+# Python / venv setup (uv is an accelerator, not a requirement -- system
+# Python is always preferred when it already satisfies the version floor).
 # ---------------------------------------------------------------------------
 
 _python_version_ok() {
@@ -614,7 +613,13 @@ _install_claude_skill() {
 _install_claude_skill_zip() {
     if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest.zip" \
         -o "$INSTALL_DIR/telegram-digest-skill.zip" 2>/dev/null; then
-        ok "Готовый архив скилла для Claude Desktop: $INSTALL_DIR/telegram-digest-skill.zip"
+        # Also copy to Downloads -- that's where README tells users to look for
+        # it, since it's a folder every non-developer already knows how to find
+        # (unlike $INSTALL_DIR). mkdir -p/cp -f so an existing file from a
+        # previous run is silently replaced, never an error.
+        mkdir -p "$HOME/Downloads" 2>/dev/null
+        cp -f "$INSTALL_DIR/telegram-digest-skill.zip" "$HOME/Downloads/telegram-digest-skill.zip" 2>/dev/null || true
+        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $HOME/Downloads/telegram-digest-skill.zip"
     else
         warn "Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него."
         rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
@@ -636,7 +641,7 @@ install_claude_skills() {
     if [[ "$have_desktop" -eq 1 ]]; then
         ( set +eu; _install_claude_skill_zip ) \
             || warn "Не удалось подготовить архив скилла -- не критично, остальное работает и без него."
-        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, загрузите $INSTALL_DIR/telegram-digest-skill.zip через Settings -> Customize -> Skills -> Upload a skill (подробности в README)."
+        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     fi
 }
 
