@@ -20,9 +20,12 @@ REPO_REF=""
 # configurable, so this path cannot be overridden here either.
 INSTALL_DIR="$HOME/telegram-mcp-ag"
 VENV_DIR="$INSTALL_DIR/.venv"
-# setup_python_and_venv()/install_package() build here, not in $VENV_DIR
-# directly -- see _activate_new_venv() for why.
-VENV_STAGING_DIR="$VENV_DIR.new"
+# setup_python_and_venv() renames $VENV_DIR here before rebuilding it fresh
+# in place (not in a staging dir moved into place afterward -- venvs bake an
+# absolute shebang to their own creation path, so renaming a *completed*
+# venv directory breaks every console-script entry point inside it with
+# "bad interpreter"). See _restore_venv_backup_on_failure/_confirm_new_venv.
+VENV_BACKUP_DIR="$VENV_DIR.bak"
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
@@ -94,7 +97,21 @@ _cleanup_maintenance_venv() {
     rm -f "$MAINTENANCE_TMP_LOG"
     return 0
 }
-trap _cleanup_maintenance_venv EXIT
+
+# If setup_python_and_venv() got as far as renaming the old, working venv
+# aside but install_package() (or anything after it) then failed, this puts
+# it back. Runs on every exit -- whether from `set -e` aborting or a normal
+# return -- so a mid-install failure never leaves the user with neither a
+# working old venv nor a finished new one. _confirm_new_venv() deletes the
+# backup once the new venv is proven to work, so by then this is a no-op.
+_restore_venv_backup_on_failure() {
+    if [[ -d "$VENV_BACKUP_DIR" ]]; then
+        rm -rf "$VENV_DIR"
+        mv "$VENV_BACKUP_DIR" "$VENV_DIR"
+    fi
+    return 0
+}
+trap '_restore_venv_backup_on_failure; _cleanup_maintenance_venv' EXIT
 
 ask() {
     # $1 = prompt text, $2 = name of the variable to fill.
@@ -188,37 +205,39 @@ setup_python_and_venv() {
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
 
-    # Built next to the real venv, not in place: if pip install below fails
-    # (network hiccup, most commonly), set -e aborts before
-    # _activate_new_venv() ever runs, so a working install is never left
-    # half-destroyed -- only replaced once the replacement is proven to work.
-    rm -rf "$VENV_STAGING_DIR"
+    # Rename the old venv aside rather than deleting it: if install_package()
+    # below fails (network hiccup, most commonly), the EXIT trap
+    # (_restore_venv_backup_on_failure) puts it right back, so a working
+    # install is never left half-destroyed. Built fresh at $VENV_DIR itself,
+    # not a staging path swapped in afterward -- see VENV_BACKUP_DIR's
+    # definition for why that specifically doesn't work for venvs.
+    rm -rf "$VENV_BACKUP_DIR"
+    if [[ -d "$VENV_DIR" ]]; then
+        mv "$VENV_DIR" "$VENV_BACKUP_DIR"
+    fi
     if [[ -n "$py" ]]; then
         info "Создаю виртуальное окружение ($py)..."
-        "$py" -m venv "$VENV_STAGING_DIR"
+        "$py" -m venv "$VENV_DIR"
     else
         info "Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)..."
-        uv venv --seed --python 3.12 "$VENV_STAGING_DIR" >/dev/null
+        uv venv --seed --python 3.12 "$VENV_DIR" >/dev/null
     fi
-    ok "Окружение готово."
+    ok "Окружение готово: $VENV_DIR"
 }
 
 install_package() {
     info "Устанавливаю telegram-mcp-ag (ref: $REPO_REF)..."
-    "$VENV_STAGING_DIR/bin/python" -m pip install --upgrade pip -q
-    "$VENV_STAGING_DIR/bin/python" -m pip install -q "git+${REPO_URL}@${REPO_REF}"
+    "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
+    "$VENV_DIR/bin/python" -m pip install -q "git+${REPO_URL}@${REPO_REF}"
     ok "Пакет установлен."
 }
 
-# The only place the previous, working $VENV_DIR is destroyed -- only reached
-# once venv creation and the pip install above have both already succeeded,
-# so a mid-install failure (most commonly a network hiccup during pip
-# install) leaves whatever was working before completely untouched instead
-# of trading a working server for "Failed to spawn process: No such file or
-# directory" in Claude Desktop until the user notices and reruns this script.
-_activate_new_venv() {
-    rm -rf "$VENV_DIR"
-    mv "$VENV_STAGING_DIR" "$VENV_DIR"
+# The venv rebuild is confirmed good at this point (setup_python_and_venv()
+# and install_package() both already succeeded) -- the backup is no longer
+# needed, and dropping it here is what makes _restore_venv_backup_on_failure
+# a no-op on a successful run instead of undoing a perfectly good install.
+_confirm_new_venv() {
+    rm -rf "$VENV_BACKUP_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -876,7 +895,7 @@ main() {
 
     setup_python_and_venv
     install_package
-    _activate_new_venv
+    _confirm_new_venv
 
     if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
         info "Найден существующий $CONFIG_PATH -- использую его без повторного входа."

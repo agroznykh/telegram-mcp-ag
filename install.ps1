@@ -76,9 +76,12 @@ $RepoRef = Resolve-RepoRef
 # Path.home() on Windows resolves via USERPROFILE, same as this.
 $InstallDir = Join-Path $env:USERPROFILE 'telegram-mcp-ag'
 $VenvDir = Join-Path $InstallDir '.venv'
-# Initialize-PythonAndVenv/Install-ServerPackage build here, not in $VenvDir
-# directly -- see Complete-VenvSwap for why.
-$VenvStagingDir = Join-Path $InstallDir '.venv.new'
+# Initialize-PythonAndVenv renames $VenvDir here before rebuilding it fresh
+# in place (not in a staging dir moved into place afterward -- venvs bake an
+# absolute path to their own creation location into every console-script
+# .exe shim, so renaming a *completed* venv directory breaks all of them).
+# See Restore-VenvBackupOnFailure/Confirm-NewVenv.
+$VenvBackupDir = Join-Path $InstallDir '.venv.bak'
 $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
@@ -215,30 +218,35 @@ function Initialize-PythonAndVenv {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Set-Location $InstallDir
 
-    # Built next to the real venv, not in place: if pip install below fails
-    # (network hiccup, most commonly), the script exits before
-    # Complete-VenvSwap ever runs, so a working install is never left
-    # half-destroyed -- only replaced once the replacement is proven to work.
-    if (Test-Path $VenvStagingDir) {
-        Remove-Item -Recurse -Force $VenvStagingDir
+    # Rename the old venv aside rather than deleting it: if a later step
+    # fails (network hiccup on the pip install below, most commonly),
+    # Restore-VenvBackupOnFailure (called from the top-level `finally`) puts
+    # it right back, so a working install is never left half-destroyed.
+    # Built fresh at $VenvDir itself, not a staging path swapped in
+    # afterward -- see $VenvBackupDir's definition for why.
+    if (Test-Path $VenvBackupDir) {
+        Remove-Item -Recurse -Force $VenvBackupDir
+    }
+    if (Test-Path $VenvDir) {
+        Move-Item -Path $VenvDir -Destination $VenvBackupDir
     }
 
     if ($pyCmd) {
         Write-Info "Создаю виртуальное окружение ($($pyCmd -join ' '))..."
-        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvStagingDir)
+        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvDir)
         if ($LASTEXITCODE -ne 0) {
             Write-Failure 'Не удалось создать виртуальное окружение.'
             exit 1
         }
     } else {
         Write-Info 'Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)...'
-        uv venv --seed --python 3.12 $VenvStagingDir | Out-Null
+        uv venv --seed --python 3.12 $VenvDir | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Failure 'Не удалось создать виртуальное окружение через uv.'
             exit 1
         }
     }
-    Write-Ok 'Окружение готово.'
+    Write-Ok "Окружение готово: $VenvDir"
 }
 
 function Get-VenvPython { Join-Path $VenvDir 'Scripts\python.exe' }
@@ -247,7 +255,7 @@ function Get-VenvGenerateSessionExe { Join-Path $VenvDir 'Scripts\telegram-mcp-g
 
 function Install-ServerPackage {
     Write-Info "Устанавливаю telegram-mcp-ag (ref: $RepoRef)..."
-    $py = Join-Path $VenvStagingDir 'Scripts\python.exe'
+    $py = Get-VenvPython
     & $py -m pip install --upgrade pip -q
     & $py -m pip install -q "git+$RepoUrl@$RepoRef"
     if ($LASTEXITCODE -ne 0) {
@@ -257,17 +265,27 @@ function Install-ServerPackage {
     Write-Ok 'Пакет установлен.'
 }
 
-# The only place the previous, working $VenvDir is destroyed -- only reached
-# once venv creation and the pip install above have both already succeeded,
-# so a mid-install failure (most commonly a network hiccup during pip
-# install) leaves whatever was working before completely untouched instead
-# of trading a working server for "Failed to spawn process" in Claude
-# Desktop until the user notices and reruns this script.
-function Complete-VenvSwap {
-    if (Test-Path $VenvDir) {
-        Remove-Item -Recurse -Force $VenvDir
+# The venv rebuild is confirmed good at this point (Initialize-PythonAndVenv
+# and Install-ServerPackage both already succeeded) -- the backup is no
+# longer needed, and dropping it here is what makes
+# Restore-VenvBackupOnFailure a no-op on a successful run.
+function Confirm-NewVenv {
+    if (Test-Path $VenvBackupDir) {
+        Remove-Item -Recurse -Force $VenvBackupDir
     }
-    Move-Item -Path $VenvStagingDir -Destination $VenvDir
+}
+
+# Called from the top-level `finally` (runs on every exit, success or
+# failure) -- a backup still present means the rebuild was interrupted
+# before Confirm-NewVenv ran, so put the old, working venv back rather than
+# leave the user with neither a working old one nor a finished new one.
+function Restore-VenvBackupOnFailure {
+    if (Test-Path $VenvBackupDir) {
+        if (Test-Path $VenvDir) {
+            Remove-Item -Recurse -Force $VenvDir
+        }
+        Move-Item -Path $VenvBackupDir -Destination $VenvDir
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -984,7 +1002,7 @@ function Invoke-Main {
 
     Initialize-PythonAndVenv
     Install-ServerPackage
-    Complete-VenvSwap
+    Confirm-NewVenv
 
     if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
         Write-Info "Найден существующий $ConfigPath -- использую его без повторного входа."
@@ -1014,6 +1032,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         Invoke-Main -Uninstall:$Uninstall -Relogin:$Relogin -Qr:$Qr -Phone:$Phone
     } finally {
+        Restore-VenvBackupOnFailure
         Remove-MaintenanceVenvs
     }
 }
