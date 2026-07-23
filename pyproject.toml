@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-mcp-ag"
-version = "0.2.4"
+version = "0.2.5"
 description = "Read-only Telegram MCP extension with native voice transcription"
 readme = "README.md"
 requires-python = ">=3.10"
