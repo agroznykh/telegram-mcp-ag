@@ -579,36 +579,65 @@ register_claude_desktop() {
     fi
 }
 
-# Claude Code and Claude Desktop both read personal skills from
-# ~/.claude/skills/ -- copying ours there (from the same ref the package
-# itself was installed from) is what makes "подключи Telegram" and "сделай
-# сводку" work as a skill in *any* project on this machine, not just when
-# working inside a checkout of this repo.
+# Claude Code (and the local/SSH/"Code" sessions of the Claude Code Desktop
+# app) reads personal skills from ~/.claude/skills/ -- copying ours there
+# (from the same ref the package itself was installed from) is what makes
+# "сделай сводку" work as a skill in *any* project on this machine, not just
+# when working inside a checkout of this repo. Ordinary Claude Desktop chat
+# does NOT read this directory: it loads skills synced from the user's
+# claude.ai account (Settings -> Customize), which no installer script can
+# configure -- see the note printed below when Desktop is detected.
+#
+# Best-effort by design, and isolated in its own subshell with -e/-u turned
+# off: a flaky download or a locale/bash-version quirk in here must never be
+# able to abort the rest of the install. This isn't hypothetical -- bash 3.2
+# (macOS's frozen system bash) has thrown a bogus "unbound variable" on this
+# exact code under a non-ASCII locale, killing an otherwise-successful
+# install right at the finish line.
 _install_claude_skill() {
     local name="$1" dest="$HOME/.claude/skills/$1"
     mkdir -p "$dest"
     if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/$name/SKILL.md" \
         -o "$dest/SKILL.md" 2>/dev/null; then
-        ok "Скилл «$name» установлен ($dest)."
+        ok "Скилл $name установлен ($dest)."
     else
-        warn "Не удалось скачать скилл «$name» -- не критично, остальное работает и без него."
+        warn "Не удалось скачать скилл $name -- не критично, остальное работает и без него."
         rm -rf "$dest"
     fi
 }
 
-install_claude_skills() {
-    local have_claude=0 dir=""
-    command -v claude >/dev/null 2>&1 && have_claude=1
-    while IFS= read -r dir; do
-        [[ -d "$dir" ]] && have_claude=1
-    done < <(_claude_desktop_candidates)
-    [[ "$have_claude" -eq 0 ]] && return 0
+# claude.ai's "Upload a skill" dialog wants a zip with a top-level
+# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
+# file the README links to for the terminal-less .mcpb install path, so
+# both routes end up with byte-identical output, and the user never has to
+# archive anything by hand.
+_install_claude_skill_zip() {
+    if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest.zip" \
+        -o "$INSTALL_DIR/telegram-digest-skill.zip" 2>/dev/null; then
+        ok "Готовый архив скилла для Claude Desktop: $INSTALL_DIR/telegram-digest-skill.zip"
+    else
+        warn "Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него."
+        rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
+    fi
+}
 
-    info "Устанавливаю скиллы Claude (сводка по Telegram, повторный вход)..."
-    local name=""
-    for name in telegram-digest setup-telegram-mcp; do
-        _install_claude_skill "$name"
-    done
+install_claude_skills() {
+    local have_cli=0 have_desktop=0 dir=""
+    command -v claude >/dev/null 2>&1 && have_cli=1
+    while IFS= read -r dir; do
+        [[ -d "$dir" ]] && have_desktop=1
+    done < <(_claude_desktop_candidates)
+    [[ "$have_cli" -eq 0 && "$have_desktop" -eq 0 ]] && return 0
+
+    info "Устанавливаю скилл Claude (сводка по Telegram)..."
+    ( set +eu; _install_claude_skill "telegram-digest" ) \
+        || warn "Установка скилла не удалась -- не критично, остальное работает и без него."
+
+    if [[ "$have_desktop" -eq 1 ]]; then
+        ( set +eu; _install_claude_skill_zip ) \
+            || warn "Не удалось подготовить архив скилла -- не критично, остальное работает и без него."
+        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, загрузите $INSTALL_DIR/telegram-digest-skill.zip через Settings -> Customize -> Skills -> Upload a skill (подробности в README)."
+    fi
 }
 
 # ---------------------------------------------------------------------------

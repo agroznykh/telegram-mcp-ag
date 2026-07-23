@@ -723,11 +723,13 @@ function Register-ClaudeDesktop {
     }
 }
 
-# Claude Code and Claude Desktop both read personal skills from
-# ~/.claude/skills/ -- copying ours there (from the same ref the package
-# itself was installed from) is what makes "подключи Telegram" and "сделай
-# сводку" work as a skill in *any* project on this machine, not just when
-# working inside a checkout of this repo.
+# Claude Code (and the local/SSH/"Code" sessions of the Claude Code Desktop
+# app) reads personal skills from ~/.claude/skills/ -- copying ours there
+# (from the same ref the package itself was installed from) is what makes
+# "сделай сводку" work as a skill in *any* project on this machine, not just
+# when working inside a checkout of this repo. Ordinary Claude Desktop chat
+# does NOT read this directory: it loads skills synced from the user's
+# claude.ai account (Settings -> Customize) -- see Install-ClaudeSkills below.
 function Install-ClaudeSkill {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
     param([string]$Name)
@@ -737,22 +739,54 @@ function Install-ClaudeSkill {
     $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/$Name/SKILL.md"
     try {
         Invoke-WebRequest -Uri $url -OutFile (Join-Path $dest 'SKILL.md') -ErrorAction Stop
-        Write-Ok "Скилл «$Name» установлен ($dest)."
+        Write-Ok "Скилл $Name установлен ($dest)."
     } catch {
-        Write-Warn "Не удалось скачать скилл «$Name» -- не критично, остальное работает и без него."
+        Write-Warn "Не удалось скачать скилл $Name -- не критично, остальное работает и без него."
         Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
     }
 }
 
-function Install-ClaudeSkills {
-    $haveClaude = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-    $claudeDesktopDir = Join-Path $env:APPDATA 'Claude'
-    if (Test-Path $claudeDesktopDir) { $haveClaude = $true }
-    if (-not $haveClaude) { return }
+# claude.ai's "Upload a skill" dialog wants a zip with a top-level
+# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
+# file the README links to for the terminal-less .mcpb install path, so
+# both routes end up with byte-identical output and nobody has to zip
+# anything by hand.
+function Install-ClaudeSkillZip {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
+    param()
 
-    Write-Info 'Устанавливаю скиллы Claude (сводка по Telegram, повторный вход)...'
-    foreach ($name in @('telegram-digest', 'setup-telegram-mcp')) {
-        Install-ClaudeSkill -Name $name
+    $out = Join-Path $InstallDir 'telegram-digest-skill.zip'
+    $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest.zip"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
+        Write-Ok "Готовый архив скилла для Claude Desktop: $out"
+    } catch {
+        Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
+        Remove-Item -Force $out -ErrorAction SilentlyContinue
+    }
+}
+
+function Install-ClaudeSkills {
+    $haveCli = [bool](Get-Command claude -ErrorAction SilentlyContinue)
+    $claudeDesktopDir = Join-Path $env:APPDATA 'Claude'
+    $haveDesktop = Test-Path $claudeDesktopDir
+    if (-not $haveCli -and -not $haveDesktop) { return }
+
+    Write-Info 'Устанавливаю скилл Claude (сводка по Telegram)...'
+    try {
+        Install-ClaudeSkill -Name 'telegram-digest'
+    } catch {
+        Write-Warn 'Установка скилла не удалась -- не критично, остальное работает и без него.'
+    }
+
+    if ($haveDesktop) {
+        try {
+            Install-ClaudeSkillZip
+        } catch {
+            Write-Warn 'Не удалось подготовить архив скилла -- не критично, остальное работает и без него.'
+        }
+        $zipPath = Join-Path $InstallDir 'telegram-digest-skill.zip'
+        Write-Info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, загрузите $zipPath через Settings -> Customize -> Skills -> Upload a skill (подробности в README)."
     }
 }
 

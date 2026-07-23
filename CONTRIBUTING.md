@@ -38,6 +38,26 @@ bash mcpb/build.sh
   корневом `pyproject.toml` (недостающая зависимость в бандле означает
   `ImportError` при первом запуске Claude Desktop, а не на этапе сборки).
 
+## Скилл `telegram-digest` для Claude Desktop
+
+`.claude/skills/telegram-digest.zip` — закоммиченный (не игнорируемый)
+готовый архив: то, что claude.ai ждёт в диалоге «Upload a skill» (папка
+`telegram-digest/` с `SKILL.md` внутри), собранное заранее, чтобы ни
+установщикам, ни README не нужно было архивировать что-либо на лету или
+полагаться на `zip`/`Compress-Archive`, которых может не быть на машине
+пользователя. `install.sh`/`install.ps1` и прямая ссылка в README отдают
+именно этот файл через `raw.githubusercontent.com` — оба пути получают
+байт-в-байт одно и то же.
+
+После правки `.claude/skills/telegram-digest/SKILL.md` пересоберите архив:
+
+```bash
+python3 .claude/skills/build_zip.py
+```
+
+`tests/test_skill_zip.py` сравнивает содержимое zip с текущим `SKILL.md` и
+падает, если архив не пересобрали после правки.
+
 ## Обновление закреплённого апстрима (`chigwell/telegram-mcp`)
 
 Этот проект импортирует `telegram_mcp.runtime` и `telegram_mcp.runner`
