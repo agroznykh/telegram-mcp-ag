@@ -128,6 +128,41 @@ def write_values(values: dict, config_path: Optional[Path] = None) -> None:
         os.chmod(config_path, 0o600)
 
 
+def clear_session(config_path: Optional[Path] = None) -> bool:
+    """Drop every session key from ``config.env``. Returns whether anything changed.
+
+    Called when Telegram reports the session as revoked: a dead session left
+    in place would make every future launch skip login-only mode and hand the
+    user the same opaque failure again. Clearing it here is what lets the next
+    process start (an extension toggle, a client restart -- no terminal) land
+    on the ordinary "no session" path and offer a fresh QR login in chat.
+    """
+    config_path = CONFIG_PATH if config_path is None else config_path
+    if not config_path.exists():
+        return False
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+
+    def _is_session_key(line: str) -> bool:
+        key = line.split("=", 1)[0].strip()
+        return (
+            key in ("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME")
+            or key.startswith(SESSION_STRING_PREFIX)
+            or key.startswith(SESSION_NAME_PREFIX)
+        )
+
+    kept = [line for line in lines if not _is_session_key(line)]
+    if len(kept) == len(lines):
+        return False
+
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(kept) + ("\n" if kept else ""))
+    if os.name == "posix":
+        os.chmod(config_path, 0o600)
+    return True
+
+
 def load(config_path: Path = CONFIG_PATH) -> None:
     """Populate ``os.environ`` with Telegram credentials.
 
@@ -142,10 +177,9 @@ def load(config_path: Path = CONFIG_PATH) -> None:
         for key, value in dotenv_values(config_path).items():
             if value is None:
                 continue
-            # Not setdefault: the .mcpb bundle runs under Claude Desktop, which
-            # substitutes an empty string for any form field the user left
-            # blank. Treating "" as a real value would let a blank form shadow
-            # config.env and make working credentials look missing.
+            # Not setdefault: a client can set an env var to an empty string
+            # rather than omitting it. Treating "" as a real value would let
+            # that shadow config.env and make working credentials look missing.
             if not os.environ.get(key, "").strip():
                 os.environ[key] = value
 

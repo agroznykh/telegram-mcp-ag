@@ -15,29 +15,6 @@ python3 -m venv .venv
 
 Тесты не ходят в сеть и не требуют настоящей Telegram-сессии.
 
-## Сборка бандла для Claude Desktop
-
-```bash
-bash mcpb/build.sh
-```
-
-Требуется Node.js (CLI `mcpb` запускается через `npx`, ставить заранее не
-нужно) и, желательно, `uv` (обновляет `mcpb/uv.lock` перед упаковкой — сборка
-работает и без него, если `uv.lock` уже существует). Результат:
-`dist/telegram-mcp-ag-<version>.mcpb`.
-
-`mcpb/src/telegram_mcp_ag/` генерируется этим скриптом (копируется из
-`src/telegram_mcp_ag/`) и находится в `.gitignore` — не редактируйте её
-напрямую, редактируйте `src/telegram_mcp_ag/` и пересобирайте.
-
-Скрипт откажется собирать бандл, если:
-- версия в `pyproject.toml` и версия в `mcpb/manifest.json` разошлись
-  (пользователь видит версию манифеста, а получает версию пакета — расхождение
-  осталось бы незамеченным);
-- зависимости в `mcpb/pyproject.toml` не покрывают всё, что перечислено в
-  корневом `pyproject.toml` (недостающая зависимость в бандле означает
-  `ImportError` при первом запуске Claude Desktop, а не на этапе сборки).
-
 ## Скилл `telegram-digest` для Claude Desktop
 
 `.claude/skills/telegram-digest.zip` — закоммиченный (не игнорируемый)
@@ -67,9 +44,8 @@ python3 .claude/skills/build_zip.py
 
 1. Выберите новый коммит из
    [`chigwell/telegram-mcp`](https://github.com/chigwell/telegram-mcp).
-2. Обновите пин **в обоих местах** — они всегда должны совпадать:
-   - `pyproject.toml` → `dependencies` → строка `telegram-mcp @ git+...@<sha>`
-   - `mcpb/pyproject.toml` → та же строка
+2. Обновите пин в `pyproject.toml` → `dependencies` → строка
+   `telegram-mcp @ git+...@<sha>`.
 3. Посмотрите diff между старым и новым SHA в `telegram_mcp/runtime.py` и
    `telegram_mcp/tools/`, в частности:
    - сигнатуры всего, что `src/telegram_mcp_ag/server.py` импортирует по имени
@@ -83,8 +59,8 @@ python3 .claude/skills/build_zip.py
      (`trial_remains_num`, `trial_remains_until_date`, `pending`, `text`), и
      ключи `transcribe_audio_trial_weekly_number` /
      `transcribe_audio_trial_duration_max`, читаемые из `help.getAppConfig`.
-4. Прогоните `pytest`, затем пересоберите и вручную проверьте бандл `.mcpb`
-   (`bash mcpb/build.sh`, установить локально, подключить настоящий аккаунт).
+4. Прогоните `pytest`, затем вручную проверьте установку через `install.sh`
+   с настоящим аккаунтом.
 5. Обновите SHA, упомянутый в `CLAUDE.md`, если он там указан.
 
 ## Скрипты установщиков

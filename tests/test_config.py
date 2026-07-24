@@ -69,8 +69,9 @@ def test_env_vars_take_priority_over_file(tmp_path, monkeypatch):
 
 
 def test_blank_env_vars_fall_back_to_file(tmp_path, monkeypatch):
-    # Claude Desktop runs the .mcpb bundle with every user_config field
-    # substituted, so a field the user left blank arrives as an empty string.
+    # A client can set an env var to an empty string rather than omitting it
+    # (e.g. a config template with an unfilled placeholder) -- that must not
+    # shadow a working config.env.
     monkeypatch.setenv("TELEGRAM_API_ID", "")
     monkeypatch.setenv("TELEGRAM_API_HASH", "   ")
     config_path = _write_config(

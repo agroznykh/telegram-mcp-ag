@@ -644,9 +644,9 @@ _install_claude_skill() {
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
 # telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for the terminal-less .mcpb install path, so
-# both routes end up with byte-identical output, and the user never has to
-# archive anything by hand.
+# file the README links to for readers who add the skill by hand, so both
+# routes end up with byte-identical output, and the user never has to
+# archive anything themselves.
 _install_claude_skill_zip() {
     if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest.zip" \
         -o "$INSTALL_DIR/telegram-digest-skill.zip" 2>/dev/null; then

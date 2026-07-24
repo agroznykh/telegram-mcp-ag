@@ -149,10 +149,22 @@ def _relogin_instructions() -> str:
 
 def _relogin_user_message(error: BaseException) -> Optional[str]:
     if isinstance(error, _RELOGIN_SESSION_ERRORS):
+        # The dead session is cleared right away: without this, every future
+        # launch keeps finding it "present" and skips login-only mode, so the
+        # QR tools never come back and the user hits this same opaque error
+        # again next time, restart or not.
+        try:
+            _config.clear_session()
+        except OSError:
+            pass
         return (
             "Сессия Telegram для этого аккаунта отозвана (устройство удалено в "
-            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом) "
-            f"-- нужно подключить аккаунт заново. {_relogin_instructions()}"
+            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом). "
+            "Сброшенную сессию уже удалили -- отключите и снова включите это "
+            "расширение (Claude Desktop: Settings -> Extensions) или перезапустите "
+            "MCP-клиента, и попросите ассистента подключить Telegram заново: сервер "
+            "покажет новый QR-код прямо в чате, терминал не нужен. Если это "
+            f"неудобно и есть терминал -- альтернатива: {_relogin_instructions()}"
         )
     return None
 

@@ -1,12 +1,13 @@
-"""QR login from the chat, for hosts that have no terminal.
+"""QR login from the chat, for whenever a session goes stale without a terminal at hand.
 
-Claude Desktop installs the .mcpb bundle through a one-shot form: it can
-collect ``api_id``/``api_hash``, but it has no way to run an interactive
-Telegram login, and the upstream server refuses to start without a session.
-That forced every Claude Desktop user through ``install.sh`` — the exact
-terminal step the bundle exists to avoid.
+The normal path (``install.sh``) already does an interactive terminal QR
+login and leaves every registered client — Claude Code, Codex, Claude
+Desktop — pointed at the resulting session. This module exists for what
+happens after that: a session revoked from the phone, or ``AUTH_KEY_DUPLICATED``
+from reusing it on a second machine. The user may not have that terminal
+open anymore, so re-authenticating has to be possible from inside the chat.
 
-So when credentials are present but a session is not, ``server.py`` starts in
+When credentials are present but a session is not, ``server.py`` starts in
 login-only mode and exposes just the tools below. Only a one-shot login token
 travels through the conversation: no phone number, no code, no cloud password,
 no session string. The token is bound to this client's key and is confirmed on
@@ -234,16 +235,29 @@ def _success_message(user, activation: str) -> str:
         f"Вход выполнен: {name}.",
         f"Сессия сохранена в {_config.CONFIG_PATH} (доступ только владельцу файла).",
     ]
+    # activation == "activated" only means the tools/list_changed notification
+    # was sent without the write itself raising -- it says nothing about
+    # whether this particular MCP client actually re-fetches the tool list
+    # inside an already-open conversation. Observed in practice: Claude
+    # Desktop often doesn't, and the assistant then improvises (tries a
+    # browser, claims the tools are missing) instead of relaying the one fix
+    # that reliably works. So the restart instruction always ships, worded as
+    # a fallback rather than a certainty either way.
     if activation == "activated":
         lines.append(
-            "Инструменты чтения Telegram и расшифровки голосовых уже доступны — "
-            "можно сразу просить сводку по чатам."
+            "Инструменты чтения Telegram и расшифровки голосовых должны быть "
+            "уже доступны в этом разговоре — можно сразу просить сводку по "
+            "чатам. Если инструменты всё же не находятся (ассистент не видит "
+            "их в списке доступных), это ограничение конкретного MCP-клиента, "
+            "а не проблема входа: выключите и снова включите расширение "
+            "Telegram в настройках (или перезапустите приложение целиком) и "
+            "начните новый разговор -- это нужно сделать один раз."
         )
     else:
         lines.append(
             "Чтобы инструменты чтения появились, выключите и снова включите "
-            "расширение Telegram в настройках (или перезапустите приложение). "
-            "Это нужно один раз."
+            "расширение Telegram в настройках (или перезапустите приложение) "
+            "и начните новый разговор. Это нужно один раз."
         )
     lines.append(
         "Если при первом вызове инструмента появится запрос подтверждения — "

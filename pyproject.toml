@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-mcp-ag"
-version = "0.2.5"
+version = "0.2.9"
 description = "Read-only Telegram MCP extension with native voice transcription"
 readme = "README.md"
-requires-python = ">=3.10"
+# <3.14: nest_asyncio (unmaintained, used by the pinned upstream runtime and
+# by our own login flow) crashes under Python 3.14's rewritten asyncio.timeout
+# with "RuntimeError: Timeout should be used inside a task".
+requires-python = ">=3.10,<3.14"
 license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [

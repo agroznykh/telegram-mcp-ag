@@ -25,6 +25,14 @@ os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 from telegram_mcp_ag import server
 
 
+@pytest.fixture(autouse=True)
+def _redirect_config_path(monkeypatch, tmp_path):
+    # _relogin_user_message() clears the session file as a side effect; without
+    # this every test in this module would clear the real ~/telegram-mcp-ag/
+    # config.env on whatever machine runs the suite.
+    monkeypatch.setattr(server._config, "CONFIG_PATH", tmp_path / "config.env")
+
+
 def _rpc_error(cls):
     # telethon RPC error constructors take the originating request; its
     # content is irrelevant to the error type itself.
@@ -36,10 +44,27 @@ def test_relogin_user_message_covers_all_session_error_types(error_cls):
     message = server._relogin_user_message(_rpc_error(error_cls))
     assert message is not None
     assert "--relogin" in message or "-Relogin" in message
+    # Leads with the terminal-free path: no client can restart the extension
+    # for the user, so this must be the words a human reads and acts on.
+    assert "QR" in message
 
 
 def test_relogin_user_message_ignores_unrelated_errors():
     assert server._relogin_user_message(ValueError("something else")) is None
+
+
+def test_relogin_user_message_clears_the_dead_session_on_disk():
+    server._config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    server._config.write_values(
+        {"TELEGRAM_API_ID": "1", "TELEGRAM_SESSION_STRING": "stale"},
+        server._config.CONFIG_PATH,
+    )
+
+    server._relogin_user_message(_rpc_error(AuthKeyUnregisteredError))
+
+    remaining = server._config.CONFIG_PATH.read_text(encoding="utf-8")
+    assert "TELEGRAM_SESSION_STRING" not in remaining
+    assert "TELEGRAM_API_ID" in remaining
 
 
 @pytest.mark.parametrize(

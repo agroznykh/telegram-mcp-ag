@@ -785,9 +785,9 @@ function Install-ClaudeSkill {
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
 # telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for the terminal-less .mcpb install path, so
-# both routes end up with byte-identical output and nobody has to zip
-# anything by hand.
+# file the README links to for readers who add the skill by hand, so both
+# routes end up with byte-identical output and nobody has to zip anything
+# themselves.
 function Install-ClaudeSkillZip {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
     param()
