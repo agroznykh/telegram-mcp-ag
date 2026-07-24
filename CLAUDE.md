@@ -69,13 +69,16 @@ install.ps1       # установщик для Windows
 
 ## Поддерживаемые клиенты
 
-| Клиент | Как |
-| :--- | :--- |
-| Claude Code | `claude mcp add -s user` |
-| Claude Desktop, режим Chat | установщик пишет `claude_desktop_config.json` |
-| Codex CLI | `codex mcp add` → `~/.codex/config.toml` |
-| ChatGPT Desktop, режим Work | тот же `~/.codex/config.toml` |
-| Claude Desktop (режим Cowork), ChatGPT Desktop (режим Chat), веб/мобильные Claude и ChatGPT | **не поддерживается** — Cowork запускает MCP-серверы в отдельной облачной песочнице, а не на машине пользователя (см. README); остальные — только remote HTTPS MCP, не stdio |
+Поддерживаются:
+- Claude Code
+- Claude Desktop, режим Cowork
+- Codex CLI
+- ChatGPT Desktop, режим Work
+
+Не поддерживаются:
+- Claude Desktop, режим Chat
+- ChatGPT Desktop, режим Chat
+- Claude (claude.ai) и ChatGPT — веб и мобильные приложения
 
 ## Разработка
 
