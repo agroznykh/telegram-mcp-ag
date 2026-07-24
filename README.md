@@ -37,11 +37,11 @@ Telegram-приложения, не пароль. Получить их можн
 ## Установка
 
 Если раньше не пользовались ни одним из приложений на компьютере — проще и
-удобнее всего установить **Claude Cowork (desktop)**, затем выполнить
-установку данного ассистента и добавить скил в приложении Claude Cowork как
+удобнее всего установить **Claude Desktop (режим Cowork)**, затем выполнить
+установку данного ассистента и добавить скил в приложении Claude Desktop как
 описано ниже.
 
-### Claude Cowork (desktop), ChatGPT Work (desktop), Claude Code CLI, Codex CLI — через терминал
+### Claude Desktop (режим Cowork), ChatGPT Desktop (режим Work), Claude Code CLI, Codex CLI — через терминал
 
 **macOS и Linux** — вставьте в терминал:
 
@@ -64,7 +64,7 @@ $f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent
 После установки перезапустите то приложение, которым пользуетесь (если оно
 уже было открыто) — новые инструменты появятся в новом чате.
 
-### Скилл `telegram-digest` для Claude Cowork (desktop) (обязательный шаг)
+### Скилл `telegram-digest` для Claude Desktop (режим Cowork) (обязательный шаг)
 
 Установите скилл `telegram-digest` — он заметно облегчит работу с Telegram
 в приложении. В Cowork его нужно добавить самостоятельно.
