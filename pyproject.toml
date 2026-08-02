@@ -15,6 +15,10 @@ license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [
   "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@fbb374ae2d2c54b939f703d73c07acc2de8ea4b8",
+  # Upstream pins no ceiling on mcp; mcp 2.0.0 dropped mcp.server.fastmcp
+  # (FastMCP/Context), which the pinned upstream runtime imports directly,
+  # breaking every fresh install. Cap below the break until upstream migrates.
+  "mcp[cli]>=1.8.0,<2.0.0",
   "python-dotenv>=1.1.0",
   # Upstream dropped this from its own deps; our login flow (server.py) still
   # needs it directly, so pin it here instead of relying on a transitive pull.
