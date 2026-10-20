@@ -51,6 +51,16 @@ except _config.ConfigError as _config_error:
 # message "transcript pending" and from touching the cache at all.
 os.environ["TELEGRAM_TRANSCRIBE"] = "off"
 
+# Upstream refuses to start a second process on the same session ("exclusive"
+# lock). Claude Desktop starts us twice by design -- once for chat and once for
+# Cowork/Code sessions -- so with the default the second one dies and Cowork
+# shows "could not start". Both run on this machine, hence from one IP, which is
+# the case "shared" exists for. It is the default here, not forced: setting
+# TELEGRAM_SESSION_LOCK=exclusive in config.env still works. A blank value is
+# "not set" (see config.load), so it gets the default too.
+if not os.environ.get("TELEGRAM_SESSION_LOCK", "").strip():
+    os.environ["TELEGRAM_SESSION_LOCK"] = "shared"
+
 from telegram_mcp import runner as _runner
 from telegram_mcp import runtime as _runtime
 from telegram_mcp.runtime import (

@@ -24,7 +24,11 @@ from telegram_mcp_ag import server
 from telegram_mcp import runtime
 runtime._apply_exposed_tools_mode()
 tools = sorted(t.name for t in runtime.mcp._tool_manager.list_tools())
-print(json.dumps({"tools": tools, "transcribe": os.environ.get("TELEGRAM_TRANSCRIBE")}))
+print(json.dumps({
+    "tools": tools,
+    "transcribe": os.environ.get("TELEGRAM_TRANSCRIBE"),
+    "lock": os.environ.get("TELEGRAM_SESSION_LOCK"),
+}))
 """
 
 # Upstream tools hidden by this package even though read-only mode lets them through.
@@ -106,7 +110,7 @@ def _dummy_session_string() -> str:
 
 def _probe(exposed_tools: str, **extra_env: str) -> dict:
     env = {
-        **os.environ,
+        **{k: v for k, v in os.environ.items() if k != "TELEGRAM_SESSION_LOCK"},
         "TELEGRAM_API_ID": "1",
         "TELEGRAM_API_HASH": "test-hash",
         "TELEGRAM_SESSION_STRING": _dummy_session_string(),
@@ -145,3 +149,17 @@ def test_write_tools_are_absent_in_read_only_mode():
 
 def test_upstream_transcription_cannot_be_turned_back_on():
     assert _probe("read-only", TELEGRAM_TRANSCRIBE="auto")["transcribe"] == "off"
+
+
+# Claude Desktop starts the server twice on one session (chat, and Cowork/Code);
+# upstream's default "exclusive" lock kills the second one.
+def test_session_lock_defaults_to_shared():
+    assert _probe("read-only")["lock"] == "shared"
+
+
+def test_blank_session_lock_counts_as_unset():
+    assert _probe("read-only", TELEGRAM_SESSION_LOCK="  ")["lock"] == "shared"
+
+
+def test_session_lock_can_be_set_back_to_exclusive():
+    assert _probe("read-only", TELEGRAM_SESSION_LOCK="exclusive")["lock"] == "exclusive"
