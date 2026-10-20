@@ -42,6 +42,15 @@ except _config.ConfigError as _config_error:
     print(f"telegram-mcp-ag: {_config_error}", file=sys.stderr)
     sys.exit(1)
 
+# Upstream grew its own voice transcription (a second `transcribe_voice` tool,
+# a Groq engine that uploads audio to a third party, and a SQLite cache at the
+# relative path `data/transcripts` created in whatever directory the client
+# launched us from). We transcribe through Telegram's native API only, so it is
+# switched off unconditionally -- config.env and the client environment must not
+# be able to turn it back on. "off" also stops listings from marking every voice
+# message "transcript pending" and from touching the cache at all.
+os.environ["TELEGRAM_TRANSCRIBE"] = "off"
+
 from telegram_mcp import runner as _runner
 from telegram_mcp import runtime as _runtime
 from telegram_mcp.runtime import (
@@ -200,6 +209,44 @@ def _patch_log_and_format_error():
 
 
 log_and_format_error = _patch_log_and_format_error()
+
+
+# Upstream tools that stay unregistered in every exposure mode, read-only
+# included. They are annotated readOnlyHint=True, so `read-only` would let them
+# through:
+#   transcribe_voice      duplicates transcribe_voice_messages; see TELEGRAM_TRANSCRIBE above.
+#   open_photo            takes `save_path` and writes the photo to disk -- a write
+#                         path hiding behind a read-only annotation.
+#   wait_for_events,      the incoming-message event feed for chat bridges; nothing
+#   incoming_feed_status  here consumes it, and it can mirror messages to a file.
+_HIDDEN_UPSTREAM_TOOLS = frozenset(
+    {"transcribe_voice", "open_photo", "wait_for_events", "incoming_feed_status"}
+)
+
+
+def _patch_apply_exposed_tools_mode():
+    """Drop ``_HIDDEN_UPSTREAM_TOOLS`` right after upstream prunes by mode.
+
+    Done after the upstream pass rather than through the ``-tool`` exclusion
+    syntax of TELEGRAM_EXPOSED_TOOLS: upstream rejects an exclusion of a tool
+    the mode already hid, and that string belongs to the user's config.env.
+    Both upstream callers (``runner.main`` and our login-only ``main``) look the
+    function up on the module at call time, so replacing the attribute reaches
+    them.
+    """
+    original = _runtime._apply_exposed_tools_mode
+
+    def patched(*args, **kwargs):
+        result = original(*args, **kwargs)
+        registered = {tool.name for tool in mcp._tool_manager.list_tools()}
+        for name in sorted(_HIDDEN_UPSTREAM_TOOLS & registered):
+            mcp._tool_manager.remove_tool(name)
+        return result
+
+    _runtime._apply_exposed_tools_mode = patched
+
+
+_patch_apply_exposed_tools_mode()
 
 
 DEFAULT_MAX_CHUNK_DURATION = 180
