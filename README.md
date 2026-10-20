@@ -83,6 +83,13 @@ $f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent
 **Add** → **Upload a skill** → выберите `telegram-digest-skill.zip` в
 Загрузках. Скилл появится в списке.
 
+### Скилл для ChatGPT Desktop и Codex
+
+Установщик сам кладёт скилл в `~/.agents/skills/telegram-digest` (на Windows —
+`%USERPROFILE%\.agents\skills`), если находит Codex CLI или ChatGPT Desktop.
+Руками ничего подключать не нужно. Если скилл не появился в новом чате,
+перезапустите приложение.
+
 ### Что не поддерживается
 
 Веб-версии и мобильные приложения — ни у Claude (claude.ai), ни у ChatGPT —

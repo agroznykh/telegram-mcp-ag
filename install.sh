@@ -228,7 +228,10 @@ setup_python_and_venv() {
 install_package() {
     info "Устанавливаю telegram-mcp-ag (ref: $REPO_REF)..."
     "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
-    "$VENV_DIR/bin/python" -m pip install -q "git+${REPO_URL}@${REPO_REF}"
+    # --force-reinstall: the upstream telegram-mcp is pinned by SHA but keeps the
+    # same version string across SHAs, so a plain install on an existing venv
+    # sees "already satisfied" and leaves the old upstream under new code.
+    "$VENV_DIR/bin/python" -m pip install -q --force-reinstall "git+${REPO_URL}@${REPO_REF}"
     ok "Пакет установлен."
 }
 
@@ -631,7 +634,10 @@ register_claude_desktop() {
 # exact code under a non-ASCII locale, killing an otherwise-successful
 # install right at the finish line.
 _install_claude_skill() {
-    local name="$1" dest="$HOME/.claude/skills/$1"
+    # Second argument: the skills root. Codex CLI and the ChatGPT desktop app
+    # read the same SKILL.md format from ~/.agents/skills, so the one file is
+    # copied there too -- see install_codex_skills().
+    local name="$1" dest="${2:-$HOME/.claude/skills}/$1"
     mkdir -p "$dest"
     if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/$name/SKILL.md" \
         -o "$dest/SKILL.md" 2>/dev/null; then
@@ -680,6 +686,21 @@ install_claude_skills() {
             || warn "Не удалось подготовить архив скилла -- не критично, остальное работает и без него."
         info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     fi
+}
+
+# Codex CLI, the Codex IDE extension and the ChatGPT desktop app read personal
+# skills from ~/.agents/skills (the open agent-skills layout: a folder with a
+# SKILL.md), picking up changes on their own. ChatGPT Chat/Work on the web and
+# mobile only see skills shipped inside plugins, which is out of reach here.
+# Same detection and the same best-effort subshell as the Claude skill above.
+install_codex_skills() {
+    if ! command -v codex >/dev/null 2>&1 && [[ ! -d "$HOME/.codex" ]]; then
+        return 0
+    fi
+
+    info "Устанавливаю скилл для Codex / ChatGPT Desktop (сводка по Telegram)..."
+    ( set +eu; _install_claude_skill "telegram-digest" "$HOME/.agents/skills" ) \
+        || warn "Установка скилла не удалась -- не критично, остальное работает и без него."
 }
 
 # ---------------------------------------------------------------------------
@@ -819,6 +840,11 @@ do_uninstall() {
         ok "Скиллы Claude удалены."
     fi
 
+    if [[ -d "$HOME/.agents/skills/telegram-digest" ]]; then
+        rm -rf "$HOME/.agents/skills/telegram-digest"
+        ok "Скилл Codex / ChatGPT Desktop удалён."
+    fi
+
     if command -v codex >/dev/null 2>&1; then
         if codex mcp remove "$SERVER_NAME" >/dev/null 2>&1; then
             ok "Codex: сервер удалён."
@@ -911,6 +937,7 @@ main() {
     register_codex
     register_claude_desktop
     install_claude_skills
+    install_codex_skills
     self_check
     print_summary
 }

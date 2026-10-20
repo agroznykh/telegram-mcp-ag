@@ -257,7 +257,10 @@ function Install-ServerPackage {
     Write-Info "Устанавливаю telegram-mcp-ag (ref: $RepoRef)..."
     $py = Get-VenvPython
     & $py -m pip install --upgrade pip -q
-    & $py -m pip install -q "git+$RepoUrl@$RepoRef"
+    # --force-reinstall: the upstream telegram-mcp is pinned by SHA but keeps the
+    # same version string across SHAs, so a plain install on an existing venv
+    # sees "already satisfied" and leaves the old upstream under new code.
+    & $py -m pip install -q --force-reinstall "git+$RepoUrl@$RepoRef"
     if ($LASTEXITCODE -ne 0) {
         Write-Failure 'Не удалось установить пакет.'
         exit 1
@@ -769,9 +772,12 @@ function Register-ClaudeDesktop {
 # claude.ai account (Settings -> Customize) -- see Install-ClaudeSkills below.
 function Install-ClaudeSkill {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
-    param([string]$Name)
+    # SkillsRoot: Codex CLI and the ChatGPT desktop app read the same SKILL.md
+    # format from ~\.agents\skills, so the one file is copied there too -- see
+    # Install-CodexSkills.
+    param([string]$Name, [string]$SkillsRoot = (Join-Path $env:USERPROFILE '.claude\skills'))
 
-    $dest = Join-Path $env:USERPROFILE ".claude\skills\$Name"
+    $dest = Join-Path $SkillsRoot $Name
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/$Name/SKILL.md"
     try {
@@ -831,6 +837,22 @@ function Install-ClaudeSkills {
             Write-Warn 'Не удалось подготовить архив скилла -- не критично, остальное работает и без него.'
         }
         Write-Info 'В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README).'
+    }
+}
+
+# Codex CLI, the Codex IDE extension and the ChatGPT desktop app read personal
+# skills from ~\.agents\skills (a folder with a SKILL.md), picking up changes on
+# their own. ChatGPT Chat/Work on the web and mobile only see skills shipped
+# inside plugins, which is out of reach here. Same detection as Register-Codex.
+function Install-CodexSkills {
+    $hasCodexCli = [bool](Get-Command codex -ErrorAction SilentlyContinue)
+    if (-not $hasCodexCli -and -not (Test-Path (Join-Path $env:USERPROFILE '.codex'))) { return }
+
+    Write-Info 'Устанавливаю скилл для Codex / ChatGPT Desktop (сводка по Telegram)...'
+    try {
+        Install-ClaudeSkill -Name 'telegram-digest' -SkillsRoot (Join-Path $env:USERPROFILE '.agents\skills')
+    } catch {
+        Write-Warn 'Установка скилла не удалась -- не критично, остальное работает и без него.'
     }
 }
 
@@ -958,6 +980,9 @@ function Invoke-Uninstall {
         if (Test-Path $skillDir) { Remove-Item -Recurse -Force $skillDir }
     }
 
+    $agentsSkillDir = Join-Path $env:USERPROFILE '.agents\skills\telegram-digest'
+    if (Test-Path $agentsSkillDir) { Remove-Item -Recurse -Force $agentsSkillDir }
+
     $codexConfig = Join-Path $env:USERPROFILE '.codex\config.toml'
     if (Get-Command codex -ErrorAction SilentlyContinue) {
         codex mcp remove $ServerName *> $null
@@ -1018,7 +1043,7 @@ function Invoke-Main {
     # Each step degrades independently: a client that isn't installed, or
     # an unexpected error registering one of them, must not stop the rest
     # from being tried -- mirrors install.sh's per-client resilience.
-    foreach ($step in @('Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Install-ClaudeSkills', 'Invoke-SelfCheck')) {
+    foreach ($step in @('Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Install-ClaudeSkills', 'Install-CodexSkills', 'Invoke-SelfCheck')) {
         try {
             & $step
         } catch {
