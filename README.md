@@ -95,9 +95,9 @@ $f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent
 Веб-версии и мобильные приложения — ни у Claude (claude.ai), ни у ChatGPT —
 подключить нельзя, ни на каких ОС.
 
-А также режим **Chat** в десктопных приложениях — ни **Claude Chat (desktop)**,
-ни **ChatGPT Chat (desktop)**: на данный момент MCP-инструменты в нём не
-подключаются, работает только режим Cowork/Work соответственно.
+А также режим **Chat** в ChatGPT Desktop: MCP-инструменты в нём не
+подключаются, работает только режим Work. В Claude Desktop инструменты
+доступны и в Chat, и в Cowork.
 
 ## Как этим пользоваться
 

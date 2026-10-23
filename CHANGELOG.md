@@ -17,7 +17,8 @@
 - Нажимает callback-кнопки (в режиме не `read-only`; в `read-only` нажатие недоступно).
 - Входит в Telegram по QR прямо в чате, если сессии ещё нет.
 - Подсказывает команду перелогина, если сессия отозвана.
-- Работает в Claude Code, Claude Desktop (Cowork), Codex CLI, ChatGPT Desktop (Work).
+- Работает в Claude Code, Claude Desktop (Chat и Cowork), Codex CLI, ChatGPT Desktop (Work).
+  В ChatGPT Desktop режим Chat инструменты не получает.
 - Ставится одной командой на macOS, Linux и Windows.
 
 ## 0.3.3 — 2026-10-23
@@ -41,7 +42,8 @@
 
 - Скилл ставится в `~/.agents/skills` для Codex и ChatGPT Desktop.
 - Установщик принудительно переустанавливает пакет.
-- Замок сессии по умолчанию `shared`: Claude Desktop запускает сервер дважды.
+- Замок сессии по умолчанию `shared`: десктопные клиенты запускают несколько
+  экземпляров сервера на одну сессию (подробности — в `TECHNICAL.md`).
 
 ## 0.3.0 — 2026-10-20
 

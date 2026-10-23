@@ -71,12 +71,11 @@ install.ps1       # установщик для Windows
 
 Поддерживаются:
 - Claude Code
-- Claude Desktop, режим Cowork
+- Claude Desktop, режимы Chat и Cowork
 - Codex CLI
 - ChatGPT Desktop, режим Work
 
 Не поддерживаются:
-- Claude Desktop, режим Chat
 - ChatGPT Desktop, режим Chat
 - Claude (claude.ai) и ChatGPT — веб и мобильные приложения
 
