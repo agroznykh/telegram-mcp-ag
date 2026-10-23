@@ -151,8 +151,9 @@ def test_upstream_transcription_cannot_be_turned_back_on():
     assert _probe("read-only", TELEGRAM_TRANSCRIBE="auto")["transcribe"] == "off"
 
 
-# Claude Desktop starts the server twice on one session (chat, and Cowork/Code);
-# upstream's default "exclusive" lock kills the second one.
+# Desktop clients start several copies of the server on one session (Claude Desktop
+# two at launch plus one for Cowork/Code, ChatGPT Desktop two in Work); upstream's
+# default "exclusive" lock kills the extra ones.
 def test_session_lock_defaults_to_shared():
     assert _probe("read-only")["lock"] == "shared"
 

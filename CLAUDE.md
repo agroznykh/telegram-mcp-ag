@@ -79,6 +79,10 @@ install.ps1       # установщик для Windows
 - ChatGPT Desktop, режим Chat
 - Claude (claude.ai) и ChatGPT — веб и мобильные приложения
 
+Режимы десктопных приложений проверены на Claude for Mac 3.6556.2 и
+ChatGPT 26.1016.62342 (подробности — в `TECHNICAL.md`); при смене версии
+приложения перепроверять.
+
 ## Разработка
 
 ```bash
