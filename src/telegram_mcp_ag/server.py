@@ -77,6 +77,11 @@ from telegram_mcp.runtime import (
     with_account,
 )
 
+# Replaces upstream's list_inline_buttons / press_inline_button, which cannot see
+# the buttons of rich messages. Imported here so it lands before the exposure
+# mode prunes the tool set.
+from telegram_mcp_ag import rich_buttons as _rich_buttons  # noqa: E402,F401
+
 
 def _install_login_client() -> None:
     """Replace the throwaway file session with an in-memory one.
