@@ -20,6 +20,11 @@
 - Работает в Claude Code, Claude Desktop (Cowork), Codex CLI, ChatGPT Desktop (Work).
 - Ставится одной командой на macOS, Linux и Windows.
 
+## 0.3.3 — 2026-10-23
+
+- У кнопок обычных inline-клавиатур в списке появились `style` и `kind: disabled`
+  (раньше стиль терялся, а неактивная кнопка выглядела как `other`).
+
 ## 0.3.2 — 2026-10-23
 
 - Кнопки rich-сообщений (Bot API 10.1+): `list_inline_buttons` их видит,

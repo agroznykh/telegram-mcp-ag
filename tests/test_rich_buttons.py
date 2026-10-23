@@ -172,6 +172,30 @@ def test_layer_229_inline_keyboard_buttons_are_read_by_type():
     assert (site.kind, site.url, site.pressable) == ("url", "https://example.com", False)
 
 
+def test_telethon_message_button_wrappers_keep_style_and_disabled():
+    def wrapped(raw):
+        # What Message.buttons yields: only text/data/url, the original is under `.button`.
+        return SimpleNamespace(button=raw, text=raw.text, data=None, url=None)
+
+    keyboard = [
+        [
+            wrapped(
+                types.KeyboardInlineButton(
+                    text="Go",
+                    type=types.InlineButtonTypeCallback(data=b"g"),
+                    style=types.KeyboardButtonStyle(bg_danger=True),
+                )
+            ),
+            wrapped(types.KeyboardInlineButton(text="Off", type=types.InlineButtonTypeDisabled())),
+        ]
+    ]
+
+    go, off = rich_buttons.collect_buttons(_message(None, buttons=keyboard))
+
+    assert (go.kind, go.style, go.pressable) == ("callback", ["bg_danger"], True)
+    assert (off.kind, off.pressable) == ("disabled", False)
+
+
 def test_press_reaches_a_keyboard_button_below_rich_ones(client):
     keyboard = [[SimpleNamespace(text="kb", data=b"k", url=None)]]
     client.messages = [_message(_rich(_row(_button("rich"))), buttons=keyboard)]

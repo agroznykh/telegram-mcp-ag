@@ -102,7 +102,8 @@ def _typed_button_info(button) -> ButtonInfo:
 def _keyboard_buttons(message) -> list:
     flat = getattr(message, "buttons", None)
     if flat:
-        return [button for row in flat for button in row]
+        # Telethon wraps each one in MessageButton, which hides `type` and `style`.
+        return [getattr(button, "button", button) for row in flat for button in row]
     markup = getattr(message, "reply_markup", None)
     if markup is not None and hasattr(markup, "rows"):
         return [button for row in markup.rows for button in row.buttons]
