@@ -80,8 +80,9 @@ $f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent
 **2. Подключите скилл**
 
 Значок профиля → **Settings** → **Customize** → вкладка **Skills** →
-**Add** → **Upload a skill** → выберите `telegram-digest-skill.zip` в
-Загрузках. Скилл появится в списке.
+**Add** → **Upload a skill** → выберите `telegram-digest-skill-<версия>.zip` в
+Загрузках. Скилл появится в списке. Загруженную версию видно на вкладке
+**Содержимое** в поле **Version**.
 
 ### Скилл для ChatGPT Desktop и Codex
 

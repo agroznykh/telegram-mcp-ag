@@ -818,7 +818,17 @@ function Install-ClaudeSkillZip {
         # a previous run, never an error.
         $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
         New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
-        $downloadsOut = Join-Path $downloadsDir 'telegram-digest-skill.zip'
+        # The version in the name tells uploads of different skill versions
+        # apart. Releases from before skills had a version get the plain name.
+        $downloadsName = 'telegram-digest-skill.zip'
+        try {
+            $skillMd = Invoke-RestMethod -Uri "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest/SKILL.md" -ErrorAction Stop
+            $versionMatch = [regex]::Match($skillMd, '(?m)^\s+version: "(\d+\.\d+)"\s*$')
+            if ($versionMatch.Success) { $downloadsName = "telegram-digest-skill-$($versionMatch.Groups[1].Value).zip" }
+        } catch {
+            Write-Verbose "Could not read the skill version: $($_.Exception.Message)"
+        }
+        $downloadsOut = Join-Path $downloadsDir $downloadsName
         Copy-Item -Path $out -Destination $downloadsOut -Force -ErrorAction SilentlyContinue
         Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $downloadsOut"
     } catch {

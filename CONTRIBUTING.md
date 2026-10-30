@@ -29,14 +29,16 @@ git config core.hooksPath .githooks
 именно этот файл через `raw.githubusercontent.com` — оба пути получают
 байт-в-байт одно и то же.
 
-После правки `.claude/skills/telegram-digest/SKILL.md` пересоберите архив:
+После правки `.claude/skills/telegram-digest/SKILL.md` поднимите в нём
+`metadata.version` и пересоберите архив:
 
 ```bash
 python3 .claude/skills/build_zip.py
 ```
 
 `tests/test_skill_zip.py` сравнивает содержимое zip с текущим `SKILL.md` и
-падает, если архив не пересобрали после правки.
+падает, если архив не пересобрали после правки. Он же падает, если текст скилла
+изменился, а версия нет: после повышения версии обновите там `SKILL_VERSIONS`.
 
 ## Обновление закреплённого апстрима (`chigwell/telegram-mcp`)
 
