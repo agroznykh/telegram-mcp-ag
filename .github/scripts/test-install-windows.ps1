@@ -30,7 +30,9 @@ if (-not (Test-Path (Join-Path $script:UpstreamSource 'pyproject.toml'))) {
 if (Test-Path $VenvBackupDir) { throw 'venv backup was not removed' }
 
 $py = Get-VenvPython
-& $py --version
+$version = & $py --version
+Write-Host $version
+if ($version -notmatch "^Python $([regex]::Escape($PythonVersion))\.") { throw "expected Python $PythonVersion, got: $version" }
 # The same call the client-config helpers make.
 & $py -m pip install -q tomlkit
 if ($LASTEXITCODE -ne 0) { throw 'pip cannot install: the client-config helpers need it' }

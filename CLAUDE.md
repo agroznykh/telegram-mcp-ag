@@ -12,7 +12,7 @@ MCP-сервер для чтения Telegram с транскрипцией го
 ## Стек
 
 ```
-Python ≥3.10 / Telethon (MTProto) / MCP SDK / setuptools
+Python ≥3.10 (установщик ставит свой 3.14 через uv) / Telethon (MTProto) / MCP SDK / setuptools
 upstream chigwell/telegram-mcp, закреплён по SHA
 ```
 

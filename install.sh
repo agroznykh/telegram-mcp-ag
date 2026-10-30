@@ -13,9 +13,12 @@ set -euo pipefail
 REPO_ARCHIVE_BASE="https://github.com/agroznykh/telegram-mcp-ag/archive"
 REPO_RAW_BASE="https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag"
 UPSTREAM_ARCHIVE_BASE="https://github.com/chigwell/telegram-mcp/archive"
-# The Python versions the CI matrix tests (.github/workflows/tests.yml) -- keep
-# in sync with it and with _python_version_ok() below. Raise the ceiling only
-# after a new version passes CI and a live QR login.
+# The server gets its own uv-managed Python, not one that belongs to another
+# program: a Homebrew cleanup or similar would take the venv down with it. Change
+# this only after the new version passes CI and a live QR login.
+PYTHON_VERSION="3.14"
+# Fallback for when that download is impossible: any Python the CI matrix tests
+# (.github/workflows/tests.yml). Keep in sync with it and _python_version_ok().
 PYTHON_RANGE=">=3.10,<3.16"
 REPO_API="https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest"
 # Override for testing: TELEGRAM_MCP_AG_REF=some-branch bash install.sh
@@ -165,9 +168,10 @@ require_tty() {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup. uv uses a Python from $PYTHON_RANGE already on the
-# machine and downloads one only if there is none. System Python and pip are
-# the fallback for when uv itself could not be installed.
+# Python / venv setup. uv provides its own $PYTHON_VERSION, reusing a copy it
+# already has. If it can't be downloaded, uv takes a Python from $PYTHON_RANGE
+# on the machine. System Python and pip are the fallback for when uv itself
+# could not be installed.
 # ---------------------------------------------------------------------------
 
 _python_version_ok() {
@@ -228,9 +232,10 @@ setup_python_and_venv() {
         info "Создаю виртуальное окружение ($py)..."
         "$py" -m venv "$VENV_DIR"
     else
-        info "Создаю виртуальное окружение (если подходящего Python нет, он скачается)..."
+        info "Создаю виртуальное окружение на Python $PYTHON_VERSION (если его ещё нет, он скачается)..."
         # --seed: the client-config helpers run "$py" -m pip install tomlkit.
-        if ! uv venv --seed --python "$PYTHON_RANGE" "$VENV_DIR" >/dev/null; then
+        if ! uv venv --seed --managed-python --python "$PYTHON_VERSION" "$VENV_DIR" >/dev/null &&
+            ! uv venv --seed --python "$PYTHON_RANGE" "$VENV_DIR" >/dev/null; then
             error "Не удалось получить Python. Проверьте интернет или установите Python версии от 3.10 до 3.15 с https://www.python.org/downloads/ и запустите установщик ещё раз."
             exit 1
         fi

@@ -59,9 +59,12 @@ try {
 $RepoArchiveBase = 'https://github.com/agroznykh/telegram-mcp-ag/archive'
 $RepoRawBase = 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag'
 $UpstreamArchiveBase = 'https://github.com/chigwell/telegram-mcp/archive'
-# The Python versions the CI matrix tests (.github/workflows/tests.yml) -- keep
-# in sync with it and with Test-PythonCommand below. Raise the ceiling only
-# after a new version passes CI and a live QR login.
+# The server gets its own uv-managed Python, not one that belongs to another
+# program, which could remove it and take the venv down too. Change this only
+# after the new version passes CI and a live QR login.
+$PythonVersion = '3.14'
+# Fallback for when that download is impossible: any Python the CI matrix tests
+# (.github/workflows/tests.yml). Keep in sync with it and Test-PythonCommand.
 $PythonRange = '>=3.10,<3.16'
 $RepoApi = 'https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest'
 
@@ -151,9 +154,10 @@ function Test-SupportedPlatform {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup. uv uses a Python from $PythonRange already on the
-# machine and downloads one only if there is none. System Python and pip are
-# the fallback for when uv itself could not be installed.
+# Python / venv setup. uv provides its own $PythonVersion, reusing a copy it
+# already has. If it can't be downloaded, uv takes a Python from $PythonRange
+# on the machine. System Python and pip are the fallback for when uv itself
+# could not be installed.
 # ---------------------------------------------------------------------------
 
 function Test-PythonCommand {
@@ -254,9 +258,12 @@ function Initialize-PythonAndVenv {
             exit 1
         }
     } else {
-        Write-Info 'Создаю виртуальное окружение (если подходящего Python нет, он скачается)...'
+        Write-Info "Создаю виртуальное окружение на Python $PythonVersion (если его ещё нет, он скачается)..."
         # --seed: the client-config helpers run "$py -m pip install tomlkit".
-        uv venv --seed --python $PythonRange $VenvDir | Out-Null
+        uv venv --seed --managed-python --python $PythonVersion $VenvDir | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            uv venv --seed --python $PythonRange $VenvDir | Out-Null
+        }
         if ($LASTEXITCODE -ne 0) {
             Write-Failure 'Не удалось получить Python. Проверьте интернет или установите Python версии от 3.10 до 3.15 с https://www.python.org/downloads/ и запустите установщик ещё раз.'
             exit 1

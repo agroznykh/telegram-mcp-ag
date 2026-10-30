@@ -128,6 +128,26 @@ def test_read_only_mode_exposes_exactly_the_reviewed_tools():
     assert set(_probe("read-only")["tools"]) == set(EXPECTED_READ_ONLY_TOOLS)
 
 
+def test_read_only_is_the_default_when_the_mode_is_missing_or_blank(tmp_path):
+    # HOME points away from any real config.env, which could set the mode itself.
+    home = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    assert set(_probe("", **home)["tools"]) == set(EXPECTED_READ_ONLY_TOOLS)
+
+    env = {k: v for k, v in os.environ.items() if k != "TELEGRAM_EXPOSED_TOOLS"}
+    env.update(
+        home,
+        TELEGRAM_API_ID="1",
+        TELEGRAM_API_HASH="test-hash",
+        TELEGRAM_SESSION_STRING=_dummy_session_string(),
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", _PROBE], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    tools = set(json.loads(done.stdout.strip().splitlines()[-1])["tools"])
+    assert tools == set(EXPECTED_READ_ONLY_TOOLS)
+
+
 def test_upstream_tools_we_replace_or_distrust_are_hidden_in_read_only():
     assert not EXPECTED_HIDDEN & set(_probe("read-only")["tools"])
 
