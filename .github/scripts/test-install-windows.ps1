@@ -31,8 +31,9 @@ if (Test-Path $VenvBackupDir) { throw 'venv backup was not removed' }
 
 $py = Get-VenvPython
 & $py --version
-& $py -m pip --version
-if ($LASTEXITCODE -ne 0) { throw 'pip is missing: the client-config helpers need it' }
+# The same call the client-config helpers make.
+& $py -m pip install -q tomlkit
+if ($LASTEXITCODE -ne 0) { throw 'pip cannot install: the client-config helpers need it' }
 
 & $py (Join-Path $PSScriptRoot 'probe_server.py') (Get-VenvServerExe)
 if ($LASTEXITCODE -ne 0) { throw 'the installed server did not start' }
