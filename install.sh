@@ -681,8 +681,14 @@ _install_claude_skill_zip() {
         # (unlike $INSTALL_DIR). mkdir -p/cp -f so an existing file from a
         # previous run is silently replaced, never an error.
         mkdir -p "$HOME/Downloads" 2>/dev/null
-        cp -f "$INSTALL_DIR/telegram-digest-skill.zip" "$HOME/Downloads/telegram-digest-skill.zip" 2>/dev/null || true
-        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $HOME/Downloads/telegram-digest-skill.zip"
+        # The version in the name tells uploads of different skill versions
+        # apart. Releases from before skills had a version get the plain name.
+        local version="" downloads_name="telegram-digest-skill.zip"
+        version="$(curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest/SKILL.md" 2>/dev/null |
+            sed -nE 's/^[[:space:]]+version: "([0-9]+\.[0-9]+)"[[:space:]]*$/\1/p' | head -1)" || true
+        [[ -n "$version" ]] && downloads_name="telegram-digest-skill-$version.zip"
+        cp -f "$INSTALL_DIR/telegram-digest-skill.zip" "$HOME/Downloads/$downloads_name" 2>/dev/null || true
+        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $HOME/Downloads/$downloads_name"
     else
         warn "Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него."
         rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
