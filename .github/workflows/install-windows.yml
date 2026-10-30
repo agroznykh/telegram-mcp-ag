@@ -1,12 +1,9 @@
 name: Windows install
 
+# No path filter: this is a required check on main, and GitHub would leave a
+# required check that a filter skipped waiting forever, blocking the merge.
 on:
   pull_request:
-    paths:
-      - install.ps1
-      - pyproject.toml
-      - .github/scripts/**
-      - .github/workflows/install-windows.yml
   workflow_dispatch:
 
 jobs:
