@@ -62,6 +62,12 @@ os.environ["TELEGRAM_TRANSCRIBE"] = "off"
 if not os.environ.get("TELEGRAM_SESSION_LOCK", "").strip():
     os.environ["TELEGRAM_SESSION_LOCK"] = "shared"
 
+# Upstream exposes every tool, sending messages included, when this is unset. A
+# session is full access to the account, so anything wider must be asked for. A
+# blank value is "not set" here too (see config.load).
+if not os.environ.get("TELEGRAM_EXPOSED_TOOLS", "").strip():
+    os.environ["TELEGRAM_EXPOSED_TOOLS"] = "read-only"
+
 from telegram_mcp import runner as _runner
 from telegram_mcp import runtime as _runtime
 from telegram_mcp.runtime import (
@@ -109,8 +115,6 @@ _LOGIN_TOOLS: list = []
 _HIDDEN_TOOLS: dict = {}
 
 if _LOGIN_MODE:
-    import nest_asyncio
-
     from telegram_mcp_ag import login as _login
 
     _install_login_client()
@@ -811,5 +815,4 @@ def main() -> None:
         if name not in _LOGIN_TOOLS:
             _HIDDEN_TOOLS[name] = mcp._tool_manager._tools.pop(name)
 
-    nest_asyncio.apply()
     asyncio.run(_run_login_server())

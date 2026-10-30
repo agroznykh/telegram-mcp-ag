@@ -11,6 +11,7 @@ shell, and fails with "no installed distributions" rather than anything
 about the script.
 """
 
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,12 @@ not_windows = pytest.mark.skipif(sys.platform == "win32", reason="install.sh tar
 
 def _powershell_executable():
     return shutil.which("pwsh") or shutil.which("powershell")
+
+
+def test_installers_can_read_the_upstream_sha_from_pyproject():
+    # Both installers download upstream by the SHA they grep out of this line.
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(r"chigwell/telegram-mcp\.git@[0-9a-f]{40}", pyproject)
 
 
 @not_windows

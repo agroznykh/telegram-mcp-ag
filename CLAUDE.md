@@ -12,7 +12,7 @@ MCP-сервер для чтения Telegram с транскрипцией го
 ## Стек
 
 ```
-Python ≥3.10 / Telethon (MTProto) / MCP SDK / setuptools
+Python 3.14 (установщик ставит свой через uv) / Telethon (MTProto) / MCP SDK / setuptools
 upstream chigwell/telegram-mcp, закреплён по SHA
 ```
 
@@ -86,12 +86,19 @@ ChatGPT 26.1016.62342 (подробности — в `TECHNICAL.md`); при с�
 ## Разработка
 
 ```bash
-python3 -m venv .venv
+uv venv --seed --managed-python --python 3.14 .venv
 .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
 Тесты не ходят в сеть и не требуют Telegram-сессии.
+
+Код — только через pull request, прямые коммиты в `main` — только для `.md`. Это
+запрещает pre-commit: после клонирования один раз выполнить
+`git config core.hooksPath .githooks`.
+
+Для слияния в `main` обязательны проверки `tests-passed` (тесты на трёх ОС) и
+`install` (настоящая установка на той ОС, чей установщик изменился).
 
 ## Релиз
 

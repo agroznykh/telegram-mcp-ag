@@ -163,6 +163,23 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
     return True
 
 
+def _ensure_exposed_tools_line(config_path: Path) -> None:
+    """Add the read-only setting to a config that lacks it.
+
+    Creates the file if there is none: the login flow and hand-written files
+    don't include this line either. Having it in the file means changing the mode
+    is editing a value, not looking up a key. A value already there, even a
+    different one, is the user's decision. A file that can't be written is no
+    problem: server.py defaults to read-only anyway.
+    """
+    if config_path.exists() and "TELEGRAM_EXPOSED_TOOLS" in dotenv_values(config_path):
+        return
+    try:
+        write_values({"TELEGRAM_EXPOSED_TOOLS": "read-only"}, config_path)
+    except OSError:
+        pass
+
+
 def load(config_path: Path = CONFIG_PATH) -> None:
     """Populate ``os.environ`` with Telegram credentials.
 
@@ -172,8 +189,12 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     Raises:
         ConfigError: required credentials are still missing or invalid.
     """
+    # In this order: writing the line also fixes the file's permissions, and the
+    # warning about them has to be seen first.
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
+    _ensure_exposed_tools_line(config_path)
+    if config_path.exists():
         for key, value in dotenv_values(config_path).items():
             if value is None:
                 continue

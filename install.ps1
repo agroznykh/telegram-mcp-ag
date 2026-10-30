@@ -4,7 +4,7 @@
     Installer for telegram-mcp-ag (Windows).
 
 .DESCRIPTION
-    Finds or bootstraps Python 3.10+, creates a venv, installs the package,
+    Creates a venv through uv (which finds or downloads Python), installs the package,
     logs into Telegram, writes config.env, and registers the server with
     whichever of Claude Code / Codex CLI / ChatGPT Desktop / Claude Desktop
     are present. Ports install.sh (macOS/Linux) -- see that file for the
@@ -52,7 +52,17 @@ try {
     Write-Verbose "Could not switch console encoding to UTF-8: $($_.Exception.Message)"
 }
 
-$RepoUrl = 'https://github.com/agroznykh/telegram-mcp-ag.git'
+# Windows PowerShell 5.1 on older .NET still defaults to TLS 1.0, which GitHub
+# rejects. Adds TLS 1.2 to whatever is already enabled.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+$RepoArchiveBase = 'https://github.com/agroznykh/telegram-mcp-ag/archive'
+$RepoRawBase = 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag'
+$UpstreamArchiveBase = 'https://github.com/chigwell/telegram-mcp/archive'
+# The server gets its own uv-managed Python, not one that belongs to another
+# program, which could remove it and take the venv down too. Change this only
+# after the new version passes CI and a live QR login.
+$PythonVersion = '3.14'
 $RepoApi = 'https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest'
 
 # Installs the latest tagged release by default, falling back to `main` if no
@@ -82,6 +92,9 @@ $VenvDir = Join-Path $InstallDir '.venv'
 # .exe shim, so renaming a *completed* venv directory breaks all of them).
 # See Restore-VenvBackupOnFailure/Confirm-NewVenv.
 $VenvBackupDir = Join-Path $InstallDir '.venv.bak'
+# See Get-UpstreamSource. $script:UpstreamSource stays empty on the pip fallback path.
+$UpstreamBaseDir = Join-Path $InstallDir 'upstream'
+$script:UpstreamSource = $null
 $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
@@ -138,56 +151,9 @@ function Test-SupportedPlatform {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup (uv is an accelerator, not a requirement -- system
-# Python is always preferred when it already satisfies the version floor).
+# Python / venv setup. uv provides its own $PythonVersion, reusing a copy it
+# already has; whatever Python the machine has is not used.
 # ---------------------------------------------------------------------------
-
-function Test-PythonCommand {
-    param([string]$Exe, [string]$VersionArg)
-    try {
-        if ($VersionArg) {
-            & $Exe $VersionArg -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>$null 1>$null
-        } else {
-            & $Exe -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>$null 1>$null
-        }
-        return ($LASTEXITCODE -eq 0)
-    } catch {
-        return $false
-    }
-}
-
-function Find-SystemPython {
-    # Returns @(exe) or @(exe, versionArg), or $null if nothing suitable
-    # was found. The `py` launcher (bundled with the official installer) is
-    # preferred since it can target a specific version even when several
-    # are installed.
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        foreach ($v in @('-3.13', '-3.12', '-3.11', '-3.10')) {
-            if (Test-PythonCommand -Exe 'py' -VersionArg $v) {
-                return @('py', $v)
-            }
-        }
-    }
-    foreach ($exe in @('python3', 'python')) {
-        if (Get-Command $exe -ErrorAction SilentlyContinue) {
-            if (Test-PythonCommand -Exe $exe -VersionArg $null) {
-                return @($exe)
-            }
-        }
-    }
-    return $null
-}
-
-function Invoke-PythonCommand {
-    # Runs a system-Python command found by Find-SystemPython/Find-Uv-style
-    # helpers, splatting the optional version-selector argument in front of
-    # the caller's own arguments.
-    param([string[]]$PyCmd, [string[]]$Arguments)
-    $allArgs = @()
-    if ($PyCmd.Length -gt 1) { $allArgs += $PyCmd[1] }
-    $allArgs += $Arguments
-    & $PyCmd[0] @allArgs
-}
 
 function Install-Uv {
     Write-Info 'Устанавливаю uv (в %USERPROFILE%\.local\bin)...'
@@ -201,17 +167,12 @@ function Install-Uv {
 }
 
 function Initialize-PythonAndVenv {
-    $pyCmd = Find-SystemPython
-
-    if (-not $pyCmd -and -not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Warn 'Не нашёл на этой машине Python версии 3.10 или новее.'
-        if (Confirm-Action 'Установить менеджер uv -- он сам скачает подходящий Python?') {
-            Install-Uv
-        }
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Install-Uv
     }
 
-    if (-not $pyCmd -and -not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Failure 'Нужен Python 3.10+. Установите его с https://www.python.org/downloads/ и запустите установщик ещё раз.'
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Failure 'Не удалось установить uv. Проверьте интернет и запустите установщик ещё раз.'
         exit 1
     }
 
@@ -231,20 +192,12 @@ function Initialize-PythonAndVenv {
         Move-Item -Path $VenvDir -Destination $VenvBackupDir
     }
 
-    if ($pyCmd) {
-        Write-Info "Создаю виртуальное окружение ($($pyCmd -join ' '))..."
-        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvDir)
-        if ($LASTEXITCODE -ne 0) {
-            Write-Failure 'Не удалось создать виртуальное окружение.'
-            exit 1
-        }
-    } else {
-        Write-Info 'Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)...'
-        uv venv --seed --python 3.12 $VenvDir | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Failure 'Не удалось создать виртуальное окружение через uv.'
-            exit 1
-        }
+    Write-Info "Создаю виртуальное окружение на Python $PythonVersion (если его ещё нет, он скачается)..."
+    # --seed: the client-config helpers run "$py -m pip install tomlkit".
+    uv venv --seed --managed-python --python $PythonVersion $VenvDir | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Failure "Не удалось скачать Python $PythonVersion. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
     }
     Write-Ok "Окружение готово: $VenvDir"
 }
@@ -253,15 +206,68 @@ function Get-VenvPython { Join-Path $VenvDir 'Scripts\python.exe' }
 function Get-VenvServerExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag.exe' }
 function Get-VenvGenerateSessionExe { Join-Path $VenvDir 'Scripts\telegram-mcp-generate-session.exe' }
 
+# Downloads the pinned upstream source, so installing needs no git. An archive
+# URL won't do: upstream's install_guard accepts only a git or file:// install,
+# and on every start checks that the source dir is still there -- which is why
+# it lives in $InstallDir rather than a temp dir. The SHA comes from the
+# release's own pyproject.toml, the one place it is pinned.
+function Get-UpstreamSource {
+    $sha = $null
+    try {
+        $pyproject = Invoke-RestMethod -Uri "$RepoRawBase/$RepoRef/pyproject.toml" -ErrorAction Stop
+        $match = [regex]::Match($pyproject, 'chigwell/telegram-mcp\.git@([0-9a-f]{40})')
+        if ($match.Success) { $sha = $match.Groups[1].Value }
+    } catch {
+        Write-Verbose "Could not read pyproject.toml: $($_.Exception.Message)"
+    }
+    if (-not $sha) {
+        Write-Failure 'Не удалось узнать, какую версию компонентов скачивать. Проверьте интернет и запустите установщик ещё раз.'
+        exit 1
+    }
+    $script:UpstreamSource = Join-Path $UpstreamBaseDir $sha
+    if (Test-Path (Join-Path $script:UpstreamSource 'pyproject.toml')) { return }
+
+    Write-Info 'Скачиваю компоненты сервера...'
+    # A short name: the zip's own top-level directory already repeats the SHA,
+    # and Expand-Archive in PowerShell 5.1 fails past 260 characters in a path.
+    $partial = Join-Path $UpstreamBaseDir 'p'
+    $archive = "$partial.zip"
+    New-Item -ItemType Directory -Force -Path $UpstreamBaseDir | Out-Null
+    if (Test-Path $partial) { Remove-Item -Recurse -Force $partial }
+    try {
+        $previousProgress = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri "$UpstreamArchiveBase/$sha.zip" -OutFile $archive -UseBasicParsing -ErrorAction Stop
+        Expand-Archive -Path $archive -DestinationPath $partial -ErrorAction Stop
+        $ProgressPreference = $previousProgress
+    } catch {
+        Write-Failure 'Не удалось скачать компоненты сервера. Проверьте интернет и запустите установщик ещё раз.'
+        exit 1
+    } finally {
+        Remove-Item -Force $archive -ErrorAction SilentlyContinue
+    }
+    # GitHub zips hold a single top-level telegram-mcp-<sha> directory.
+    $extracted = Get-ChildItem -Path $partial -Directory | Select-Object -First 1
+    if (Test-Path $script:UpstreamSource) { Remove-Item -Recurse -Force $script:UpstreamSource }
+    Move-Item -Path $extracted.FullName -Destination $script:UpstreamSource
+    Remove-Item -Recurse -Force $partial
+}
+
 function Install-ServerPackage {
     Write-Info "Устанавливаю telegram-mcp-ag (ref: $RepoRef)..."
     $py = Get-VenvPython
-    & $py -m pip install --upgrade pip -q
-    # --force-reinstall: the upstream telegram-mcp is pinned by SHA but keeps the
+    $packageUrl = "$RepoArchiveBase/$RepoRef.tar.gz"
+    # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
     # same version string across SHAs, so a plain install on an existing venv
     # sees "already satisfied" and leaves the old upstream under new code.
-    & $py -m pip install -q --force-reinstall "git+$RepoUrl@$RepoRef"
-    if ($LASTEXITCODE -ne 0) {
+    Get-UpstreamSource
+    $sourceUri = & $py -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' $script:UpstreamSource
+    $overrides = [System.IO.Path]::GetTempFileName()
+    Set-Content -Path $overrides -Encoding Ascii -Value "telegram-mcp @ $sourceUri"
+    uv pip install -q --python $py --reinstall --overrides $overrides $packageUrl
+    $installExit = $LASTEXITCODE
+    Remove-Item -Force $overrides -ErrorAction SilentlyContinue
+    if ($installExit -ne 0) {
         Write-Failure 'Не удалось установить пакет.'
         exit 1
     }
@@ -275,6 +281,12 @@ function Install-ServerPackage {
 function Confirm-NewVenv {
     if (Test-Path $VenvBackupDir) {
         Remove-Item -Recurse -Force $VenvBackupDir
+    }
+    # Older upstream copies had to survive until now: the backup venv needed them.
+    if ($script:UpstreamSource) {
+        Get-ChildItem -Path $UpstreamBaseDir -Directory |
+            Where-Object { $_.FullName -ne $script:UpstreamSource } |
+            Remove-Item -Recurse -Force
     }
 }
 
@@ -495,18 +507,16 @@ function Register-ClaudeCode {
 
 function Get-MaintenancePython {
     # Returns a usable python.exe path, or $null. Prefers the venv; falls
-    # back to a throwaway venv built from system Python so `pip install
-    # tomlkit` never touches a locked-down system interpreter.
+    # back to a throwaway venv built the same way the real one is.
     $venvPy = Get-VenvPython
     if (Test-Path $venvPy) { return $venvPy }
 
-    $sysPy = Find-SystemPython
-    if (-not $sysPy) { return $null }
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return $null }
 
     $tmpRoot = Join-Path $env:TEMP ([System.Guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
     $tmpVenv = Join-Path $tmpRoot 'venv'
-    Invoke-PythonCommand -PyCmd $sysPy -Arguments @('-m', 'venv', $tmpVenv) *> $null
+    uv venv --seed --managed-python --python $PythonVersion $tmpVenv *> $null
     if ($LASTEXITCODE -ne 0) {
         Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
         return $null
