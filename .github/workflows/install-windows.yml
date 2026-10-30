@@ -1,7 +1,7 @@
 name: Windows install
 
 on:
-  push:
+  pull_request:
     paths:
       - install.ps1
       - pyproject.toml
@@ -18,5 +18,7 @@ jobs:
       - name: Run the install steps
         shell: powershell
         env:
-          TELEGRAM_MCP_AG_REF: ${{ github.sha }}
+          # The branch commit: the merge commit github.sha points to on a PR
+          # is not guaranteed to be downloadable as an archive.
+          TELEGRAM_MCP_AG_REF: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/test-install-windows.ps1
