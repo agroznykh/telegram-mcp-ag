@@ -189,9 +189,12 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     Raises:
         ConfigError: required credentials are still missing or invalid.
     """
-    _ensure_exposed_tools_line(config_path)
+    # In this order: writing the line also fixes the file's permissions, and the
+    # warning about them has to be seen first.
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
+    _ensure_exposed_tools_line(config_path)
+    if config_path.exists():
         for key, value in dotenv_values(config_path).items():
             if value is None:
                 continue
