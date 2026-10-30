@@ -1,0 +1,81 @@
+name: Install
+
+# Runs on every pull request and decides inside whether there is work to do: the
+# `install` job is a required check on main, and a workflow skipped by a `paths:`
+# filter would leave it pending forever. A job skipped by `if:` counts as passed.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      unix: ${{ steps.filter.outputs.unix }}
+      windows: ${{ steps.filter.outputs.windows }}
+    steps:
+      - id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [[ -z "$PR" ]]; then
+            echo "unix=true" >>"$GITHUB_OUTPUT"
+            echo "windows=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" --name-only)"
+          shared='pyproject\.toml|\.github/scripts/probe_server\.py|\.github/workflows/install\.yml'
+          affected() { grep -qE "^($shared|$1)" <<<"$files" && echo true || echo false; }
+          echo "unix=$(affected 'install\.sh|\.github/scripts/test-install-unix\.sh')" >>"$GITHUB_OUTPUT"
+          echo "windows=$(affected 'install\.ps1|\.github/scripts/test-install-windows\.ps1')" >>"$GITHUB_OUTPUT"
+
+  unix:
+    needs: changes
+    if: needs.changes.outputs.unix == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run the install steps
+        env:
+          # The branch commit: the merge commit github.sha points to on a PR
+          # is not guaranteed to be downloadable as an archive.
+          TELEGRAM_MCP_AG_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/test-install-unix.sh
+
+  windows:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run the install steps
+        shell: powershell
+        env:
+          TELEGRAM_MCP_AG_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: .github/scripts/test-install-windows.ps1
+
+  # The single required check on main.
+  install:
+    if: always()
+    needs: [changes, unix, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ needs.changes.result }} ${{ needs.unix.result }} ${{ needs.windows.result }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            [[ "$result" == "success" || "$result" == "skipped" ]] || exit 1
+          done
+          [[ "${{ needs.changes.result }}" == "success" ]]

@@ -187,7 +187,7 @@ def test_load_keeps_an_existing_exposed_tools_line(tmp_path, monkeypatch, line):
     assert config_path.read_text(encoding="utf-8") == f"{line}\n"
 
 
-def test_load_does_not_create_a_missing_config(tmp_path, monkeypatch):
+def test_load_creates_a_missing_config_with_the_exposed_tools_line(tmp_path, monkeypatch):
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
     monkeypatch.setenv("TELEGRAM_SESSION_STRING", _valid_session_string())
@@ -195,7 +195,7 @@ def test_load_does_not_create_a_missing_config(tmp_path, monkeypatch):
 
     config.load(config_path=config_path)
 
-    assert not config_path.exists()
+    assert config_path.read_text(encoding="utf-8") == "TELEGRAM_EXPOSED_TOOLS=read-only\n"
 
 
 def test_write_values_creates_an_owner_only_file(tmp_path):

@@ -1,8 +1,8 @@
 """Starts an installed server over stdio and checks it serves the login tools."""
 
 import asyncio
-import os
 import sys
+from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -11,11 +11,12 @@ EXPECTED = {"telegram_login_start", "telegram_login_check"}
 
 
 async def main(command: str) -> None:
+    home = str(Path.home())
     params = StdioServerParameters(
         command=command,
         env={
-            "HOME": os.environ["USERPROFILE"],
-            "USERPROFILE": os.environ["USERPROFILE"],
+            "HOME": home,
+            "USERPROFILE": home,
             "TELEGRAM_API_ID": "1",
             "TELEGRAM_API_HASH": "dummy",
         },

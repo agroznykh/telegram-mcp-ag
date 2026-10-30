@@ -5,7 +5,10 @@
 ```bash
 uv venv --seed --managed-python --python 3.14 .venv
 .venv/bin/python -m pip install -e ".[dev]"
+git config core.hooksPath .githooks
 ```
+
+Хук разрешает прямые коммиты в `main` только для `.md`. Код идёт через pull request.
 
 ## Тесты
 

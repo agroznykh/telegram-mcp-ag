@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Code reaches main only through a pull request, where the required checks run.
+# Documentation (*.md) may be committed to main directly.
+set -euo pipefail
+
+branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+[ "$branch" = "main" ] || exit 0
+
+not_docs="$(git diff --cached --name-only --diff-filter=ACDMRT | grep -v '\.md$' || true)"
+if [ -n "$not_docs" ]; then
+    echo "Прямые коммиты в main разрешены только для .md. Создайте ветку и откройте pull request. Не подходят файлы:" >&2
+    printf '  %s\n' "$not_docs" >&2
+    exit 1
+fi
