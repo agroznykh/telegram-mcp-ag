@@ -3,7 +3,7 @@
 ## Настройка окружения
 
 ```bash
-python3 -m venv .venv
+uv venv --seed --managed-python --python 3.14 .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 

@@ -7,10 +7,9 @@ name = "telegram-mcp-ag"
 version = "0.3.4"
 description = "Read-only Telegram MCP extension with native voice transcription"
 readme = "README.md"
-# No upper bound: a cap here only turns an untested Python into a hard pip error.
-# The installers pin the version users actually get (PYTHON_VERSION) and fall back
-# to PYTHON_RANGE, which must match the CI matrix in .github/workflows/tests.yml.
-requires-python = ">=3.10"
+# The one version the installers put users on (PYTHON_VERSION) and CI tests. No
+# upper bound: a cap only turns a newer Python into a hard pip error.
+requires-python = ">=3.14"
 license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [

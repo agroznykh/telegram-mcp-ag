@@ -17,9 +17,6 @@ UPSTREAM_ARCHIVE_BASE="https://github.com/chigwell/telegram-mcp/archive"
 # program: a Homebrew cleanup or similar would take the venv down with it. Change
 # this only after the new version passes CI and a live QR login.
 PYTHON_VERSION="3.14"
-# Fallback for when that download is impossible: any Python the CI matrix tests
-# (.github/workflows/tests.yml). Keep in sync with it and _python_version_ok().
-PYTHON_RANGE=">=3.10,<3.16"
 REPO_API="https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest"
 # Override for testing: TELEGRAM_MCP_AG_REF=some-branch bash install.sh
 # Resolved below, once the output helpers it might warn through are defined.
@@ -169,26 +166,8 @@ require_tty() {
 
 # ---------------------------------------------------------------------------
 # Python / venv setup. uv provides its own $PYTHON_VERSION, reusing a copy it
-# already has. If it can't be downloaded, uv takes a Python from $PYTHON_RANGE
-# on the machine. System Python and pip are the fallback for when uv itself
-# could not be installed.
+# already has; whatever Python the machine has is not used.
 # ---------------------------------------------------------------------------
-
-_python_version_ok() {
-    "$1" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 16) else 1)' 2>/dev/null
-}
-
-find_system_python() {
-    local candidates=(python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3 python)
-    local c=""
-    for c in "${candidates[@]}"; do
-        if command -v "$c" >/dev/null 2>&1 && _python_version_ok "$c"; then
-            command -v "$c"
-            return 0
-        fi
-    done
-    return 1
-}
 
 install_uv() {
     info "Устанавливаю uv (без sudo, в ~/.local/bin)..."
@@ -201,18 +180,13 @@ install_uv() {
 }
 
 setup_python_and_venv() {
-    local py=""
-
     if ! command -v uv >/dev/null 2>&1; then
         install_uv
     fi
 
     if ! command -v uv >/dev/null 2>&1; then
-        py="$(find_system_python || true)"
-        if [[ -z "$py" ]]; then
-            error "Нужен Python версии от 3.10 до 3.15. Установите его с https://www.python.org/downloads/ и запустите установщик ещё раз."
-            exit 1
-        fi
+        error "Не удалось установить uv. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -228,17 +202,11 @@ setup_python_and_venv() {
     if [[ -d "$VENV_DIR" ]]; then
         mv "$VENV_DIR" "$VENV_BACKUP_DIR"
     fi
-    if [[ -n "$py" ]]; then
-        info "Создаю виртуальное окружение ($py)..."
-        "$py" -m venv "$VENV_DIR"
-    else
-        info "Создаю виртуальное окружение на Python $PYTHON_VERSION (если его ещё нет, он скачается)..."
-        # --seed: the client-config helpers run "$py" -m pip install tomlkit.
-        if ! uv venv --seed --managed-python --python "$PYTHON_VERSION" "$VENV_DIR" >/dev/null &&
-            ! uv venv --seed --python "$PYTHON_RANGE" "$VENV_DIR" >/dev/null; then
-            error "Не удалось получить Python. Проверьте интернет или установите Python версии от 3.10 до 3.15 с https://www.python.org/downloads/ и запустите установщик ещё раз."
-            exit 1
-        fi
+    info "Создаю виртуальное окружение на Python $PYTHON_VERSION (если его ещё нет, он скачается)..."
+    # --seed: the client-config helpers run "$py" -m pip install tomlkit.
+    if ! uv venv --seed --managed-python --python "$PYTHON_VERSION" "$VENV_DIR" >/dev/null; then
+        error "Не удалось скачать Python $PYTHON_VERSION. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
     fi
     ok "Окружение готово: $VENV_DIR"
 }
@@ -277,23 +245,13 @@ install_package() {
     # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
     # same version string across SHAs, so a plain install on an existing venv
     # sees "already satisfied" and leaves the old upstream under new code.
-    if command -v uv >/dev/null 2>&1; then
-        _fetch_upstream
-        local overrides=""
-        overrides="$(mktemp)"
-        printf 'telegram-mcp @ %s\n' \
-            "$("$VENV_DIR/bin/python" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "$UPSTREAM_SOURCE")" >"$overrides"
-        uv pip install -q --python "$VENV_DIR/bin/python" --reinstall --overrides "$overrides" "$package_url"
-        rm -f "$overrides"
-    else
-        # Without uv there is no way to swap the git dependency for a local dir.
-        if ! command -v git >/dev/null 2>&1; then
-            error "Не удалось установить uv, а без него нужен Git. Установите Git с https://git-scm.com/downloads или проверьте интернет и запустите установщик ещё раз."
-            exit 1
-        fi
-        "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
-        "$VENV_DIR/bin/python" -m pip install -q --force-reinstall "$package_url"
-    fi
+    _fetch_upstream
+    local overrides=""
+    overrides="$(mktemp)"
+    printf 'telegram-mcp @ %s\n' \
+        "$("$VENV_DIR/bin/python" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "$UPSTREAM_SOURCE")" >"$overrides"
+    uv pip install -q --python "$VENV_DIR/bin/python" --reinstall --overrides "$overrides" "$package_url"
+    rm -f "$overrides"
     ok "Пакет установлен."
 }
 
@@ -507,17 +465,13 @@ _maintenance_python() {
     fi
 
     # $VENV_DIR is gone (e.g. a second --uninstall run after the directory
-    # was already removed), but we may still need to edit a client config.
-    # System Python on Debian/Ubuntu and similar refuses `pip install`
-    # outside a venv (PEP 668), so spin up a throwaway one instead of
-    # touching system packages.
-    local sys_py=""
-    sys_py="$(find_system_python || true)"
-    [[ -z "$sys_py" ]] && return 0
+    # was already removed), but we may still need to edit a client config,
+    # so spin up a throwaway venv the same way the real one is built.
+    command -v uv >/dev/null 2>&1 || return 0
 
     local venv_root=""
     venv_root="$(mktemp -d)"
-    if ! "$sys_py" -m venv "$venv_root/venv" >/dev/null 2>&1; then
+    if ! uv venv --seed --managed-python --python "$PYTHON_VERSION" "$venv_root/venv" >/dev/null 2>&1; then
         rm -rf "$venv_root"
         return 0
     fi

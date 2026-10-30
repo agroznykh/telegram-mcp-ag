@@ -63,9 +63,6 @@ $UpstreamArchiveBase = 'https://github.com/chigwell/telegram-mcp/archive'
 # program, which could remove it and take the venv down too. Change this only
 # after the new version passes CI and a live QR login.
 $PythonVersion = '3.14'
-# Fallback for when that download is impossible: any Python the CI matrix tests
-# (.github/workflows/tests.yml). Keep in sync with it and Test-PythonCommand.
-$PythonRange = '>=3.10,<3.16'
 $RepoApi = 'https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest'
 
 # Installs the latest tagged release by default, falling back to `main` if no
@@ -155,58 +152,8 @@ function Test-SupportedPlatform {
 
 # ---------------------------------------------------------------------------
 # Python / venv setup. uv provides its own $PythonVersion, reusing a copy it
-# already has. If it can't be downloaded, uv takes a Python from $PythonRange
-# on the machine. System Python and pip are the fallback for when uv itself
-# could not be installed.
+# already has; whatever Python the machine has is not used.
 # ---------------------------------------------------------------------------
-
-function Test-PythonCommand {
-    param([string]$Exe, [string]$VersionArg)
-    $versionCheck = 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 16) else 1)'
-    try {
-        if ($VersionArg) {
-            & $Exe $VersionArg -c $versionCheck 2>$null 1>$null
-        } else {
-            & $Exe -c $versionCheck 2>$null 1>$null
-        }
-        return ($LASTEXITCODE -eq 0)
-    } catch {
-        return $false
-    }
-}
-
-function Find-SystemPython {
-    # Returns @(exe) or @(exe, versionArg), or $null if nothing suitable
-    # was found. The `py` launcher (bundled with the official installer) is
-    # preferred since it can target a specific version even when several
-    # are installed.
-    if (Get-Command py -ErrorAction SilentlyContinue) {
-        foreach ($v in @('-3.15', '-3.14', '-3.13', '-3.12', '-3.11', '-3.10')) {
-            if (Test-PythonCommand -Exe 'py' -VersionArg $v) {
-                return @('py', $v)
-            }
-        }
-    }
-    foreach ($exe in @('python3', 'python')) {
-        if (Get-Command $exe -ErrorAction SilentlyContinue) {
-            if (Test-PythonCommand -Exe $exe -VersionArg $null) {
-                return @($exe)
-            }
-        }
-    }
-    return $null
-}
-
-function Invoke-PythonCommand {
-    # Runs a system-Python command found by Find-SystemPython/Find-Uv-style
-    # helpers, splatting the optional version-selector argument in front of
-    # the caller's own arguments.
-    param([string[]]$PyCmd, [string[]]$Arguments)
-    $allArgs = @()
-    if ($PyCmd.Length -gt 1) { $allArgs += $PyCmd[1] }
-    $allArgs += $Arguments
-    & $PyCmd[0] @allArgs
-}
 
 function Install-Uv {
     Write-Info 'Устанавливаю uv (в %USERPROFILE%\.local\bin)...'
@@ -220,18 +167,13 @@ function Install-Uv {
 }
 
 function Initialize-PythonAndVenv {
-    $pyCmd = $null
-
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
         Install-Uv
     }
 
     if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        $pyCmd = Find-SystemPython
-        if (-not $pyCmd) {
-            Write-Failure 'Нужен Python версии от 3.10 до 3.15. Установите его с https://www.python.org/downloads/ и запустите установщик ещё раз.'
-            exit 1
-        }
+        Write-Failure 'Не удалось установить uv. Проверьте интернет и запустите установщик ещё раз.'
+        exit 1
     }
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -250,24 +192,12 @@ function Initialize-PythonAndVenv {
         Move-Item -Path $VenvDir -Destination $VenvBackupDir
     }
 
-    if ($pyCmd) {
-        Write-Info "Создаю виртуальное окружение ($($pyCmd -join ' '))..."
-        Invoke-PythonCommand -PyCmd $pyCmd -Arguments @('-m', 'venv', $VenvDir)
-        if ($LASTEXITCODE -ne 0) {
-            Write-Failure 'Не удалось создать виртуальное окружение.'
-            exit 1
-        }
-    } else {
-        Write-Info "Создаю виртуальное окружение на Python $PythonVersion (если его ещё нет, он скачается)..."
-        # --seed: the client-config helpers run "$py -m pip install tomlkit".
-        uv venv --seed --managed-python --python $PythonVersion $VenvDir | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            uv venv --seed --python $PythonRange $VenvDir | Out-Null
-        }
-        if ($LASTEXITCODE -ne 0) {
-            Write-Failure 'Не удалось получить Python. Проверьте интернет или установите Python версии от 3.10 до 3.15 с https://www.python.org/downloads/ и запустите установщик ещё раз.'
-            exit 1
-        }
+    Write-Info "Создаю виртуальное окружение на Python $PythonVersion (если его ещё нет, он скачается)..."
+    # --seed: the client-config helpers run "$py -m pip install tomlkit".
+    uv venv --seed --managed-python --python $PythonVersion $VenvDir | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Failure "Не удалось скачать Python $PythonVersion. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
     }
     Write-Ok "Окружение готово: $VenvDir"
 }
@@ -330,28 +260,14 @@ function Install-ServerPackage {
     # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
     # same version string across SHAs, so a plain install on an existing venv
     # sees "already satisfied" and leaves the old upstream under new code.
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
-        Get-UpstreamSource
-        $sourceUri = & $py -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' $script:UpstreamSource
-        $overrides = [System.IO.Path]::GetTempFileName()
-        Set-Content -Path $overrides -Encoding Ascii -Value "telegram-mcp @ $sourceUri"
-        uv pip install -q --python $py --reinstall --overrides $overrides $packageUrl
-        $installExit = $LASTEXITCODE
-        Remove-Item -Force $overrides -ErrorAction SilentlyContinue
-        if ($installExit -ne 0) {
-            Write-Failure 'Не удалось установить пакет.'
-            exit 1
-        }
-    } else {
-        # Without uv there is no way to swap the git dependency for a local dir.
-        if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-            Write-Failure 'Не удалось установить uv, а без него нужен Git. Установите Git с https://git-scm.com/downloads или проверьте интернет и запустите установщик ещё раз.'
-            exit 1
-        }
-        & $py -m pip install --upgrade pip -q
-        & $py -m pip install -q --force-reinstall $packageUrl
-    }
-    if ($LASTEXITCODE -ne 0) {
+    Get-UpstreamSource
+    $sourceUri = & $py -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' $script:UpstreamSource
+    $overrides = [System.IO.Path]::GetTempFileName()
+    Set-Content -Path $overrides -Encoding Ascii -Value "telegram-mcp @ $sourceUri"
+    uv pip install -q --python $py --reinstall --overrides $overrides $packageUrl
+    $installExit = $LASTEXITCODE
+    Remove-Item -Force $overrides -ErrorAction SilentlyContinue
+    if ($installExit -ne 0) {
         Write-Failure 'Не удалось установить пакет.'
         exit 1
     }
@@ -591,18 +507,16 @@ function Register-ClaudeCode {
 
 function Get-MaintenancePython {
     # Returns a usable python.exe path, or $null. Prefers the venv; falls
-    # back to a throwaway venv built from system Python so `pip install
-    # tomlkit` never touches a locked-down system interpreter.
+    # back to a throwaway venv built the same way the real one is.
     $venvPy = Get-VenvPython
     if (Test-Path $venvPy) { return $venvPy }
 
-    $sysPy = Find-SystemPython
-    if (-not $sysPy) { return $null }
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) { return $null }
 
     $tmpRoot = Join-Path $env:TEMP ([System.Guid]::NewGuid())
     New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
     $tmpVenv = Join-Path $tmpRoot 'venv'
-    Invoke-PythonCommand -PyCmd $sysPy -Arguments @('-m', 'venv', $tmpVenv) *> $null
+    uv venv --seed --managed-python --python $PythonVersion $tmpVenv *> $null
     if ($LASTEXITCODE -ne 0) {
         Remove-Item -Recurse -Force $tmpRoot -ErrorAction SilentlyContinue
         return $null

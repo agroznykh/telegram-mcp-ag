@@ -22,7 +22,7 @@ API Telegram, без сторонних сервисов распознаван�
 ## Стек
 
 ```
-Python ≥3.10 / Telethon (MTProto) / MCP SDK / setuptools
+Python 3.14 / Telethon (MTProto) / MCP SDK / setuptools
 ```
 
 ### Почему установщик ставит свой Python
