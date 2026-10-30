@@ -105,8 +105,8 @@ uv venv --seed --managed-python --python 3.14 .venv
 Релизы (git-теги `vX.Y.Z`) по-прежнему нужны: `install.sh`/`install.ps1` ставят
 пакет из последнего релизного тега на GitHub, а не из `main` (`install_package()`
 в `install.sh`), так что правки без нового тега до пользователей не доходят.
-`.github/workflows/release.yml` по пушу тега собирает wheel и прикладывает
-к GitHub Release.
+`.github/workflows/release.yml` по пушу тега создаёт GitHub Release, через него
+установщики и находят последнюю версию.
 
 Версия зашита в двух местах, они не выводятся друг из друга — при бампе
 обновлять оба:
