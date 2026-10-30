@@ -10,7 +10,13 @@
 # never opened a terminal before (see CLAUDE.md). Code comments are English.
 set -euo pipefail
 
-REPO_URL="https://github.com/agroznykh/telegram-mcp-ag.git"
+REPO_ARCHIVE_BASE="https://github.com/agroznykh/telegram-mcp-ag/archive"
+REPO_RAW_BASE="https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag"
+UPSTREAM_ARCHIVE_BASE="https://github.com/chigwell/telegram-mcp/archive"
+# The Python versions the CI matrix tests (.github/workflows/tests.yml) -- keep
+# in sync with it and with _python_version_ok() below. Raise the ceiling only
+# after a new version passes CI and a live QR login.
+PYTHON_RANGE=">=3.10,<3.16"
 REPO_API="https://api.github.com/repos/agroznykh/telegram-mcp-ag/releases/latest"
 # Override for testing: TELEGRAM_MCP_AG_REF=some-branch bash install.sh
 # Resolved below, once the output helpers it might warn through are defined.
@@ -26,6 +32,9 @@ VENV_DIR="$INSTALL_DIR/.venv"
 # venv directory breaks every console-script entry point inside it with
 # "bad interpreter"). See _restore_venv_backup_on_failure/_confirm_new_venv.
 VENV_BACKUP_DIR="$VENV_DIR.bak"
+# See _fetch_upstream(). UPSTREAM_SOURCE stays empty on the pip fallback path.
+UPSTREAM_BASE_DIR="$INSTALL_DIR/upstream"
+UPSTREAM_SOURCE=""
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
@@ -156,16 +165,17 @@ require_tty() {
 }
 
 # ---------------------------------------------------------------------------
-# Python / venv setup (uv is an accelerator, not a requirement -- system
-# Python is always preferred when it already satisfies the version floor).
+# Python / venv setup. uv uses a Python from $PYTHON_RANGE already on the
+# machine and downloads one only if there is none. System Python and pip are
+# the fallback for when uv itself could not be installed.
 # ---------------------------------------------------------------------------
 
 _python_version_ok() {
-    "$1" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 10) else 1)' 2>/dev/null
+    "$1" -c 'import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] < (3, 16) else 1)' 2>/dev/null
 }
 
 find_system_python() {
-    local candidates=(python3.13 python3.12 python3.11 python3.10 python3 python)
+    local candidates=(python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python3 python)
     local c=""
     for c in "${candidates[@]}"; do
         if command -v "$c" >/dev/null 2>&1 && _python_version_ok "$c"; then
@@ -188,18 +198,17 @@ install_uv() {
 
 setup_python_and_venv() {
     local py=""
-    py="$(find_system_python || true)"
 
-    if [[ -z "$py" ]] && ! command -v uv >/dev/null 2>&1; then
-        warn "Не нашёл на этой машине Python версии 3.10 или новее."
-        if confirm "Установить менеджер uv -- он сам скачает подходящий Python без sudo?"; then
-            install_uv
-        fi
+    if ! command -v uv >/dev/null 2>&1; then
+        install_uv
     fi
 
-    if [[ -z "$py" ]] && ! command -v uv >/dev/null 2>&1; then
-        error "Нужен Python 3.10+. Установите его с https://www.python.org/downloads/ и запустите установщик ещё раз."
-        exit 1
+    if ! command -v uv >/dev/null 2>&1; then
+        py="$(find_system_python || true)"
+        if [[ -z "$py" ]]; then
+            error "Нужен Python версии от 3.10 до 3.15. Установите его с https://www.python.org/downloads/ и запустите установщик ещё раз."
+            exit 1
+        fi
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -219,19 +228,67 @@ setup_python_and_venv() {
         info "Создаю виртуальное окружение ($py)..."
         "$py" -m venv "$VENV_DIR"
     else
-        info "Создаю виртуальное окружение через uv (при необходимости скачает Python 3.12)..."
-        uv venv --seed --python 3.12 "$VENV_DIR" >/dev/null
+        info "Создаю виртуальное окружение (если подходящего Python нет, он скачается)..."
+        # --seed: the client-config helpers run "$py" -m pip install tomlkit.
+        if ! uv venv --seed --python "$PYTHON_RANGE" "$VENV_DIR" >/dev/null; then
+            error "Не удалось получить Python. Проверьте интернет или установите Python версии от 3.10 до 3.15 с https://www.python.org/downloads/ и запустите установщик ещё раз."
+            exit 1
+        fi
     fi
     ok "Окружение готово: $VENV_DIR"
 }
 
+# Downloads the pinned upstream source, so installing needs no git. An archive
+# URL won't do: upstream's install_guard accepts only a git or file:// install,
+# and on every start checks that the source dir is still there -- which is why
+# it lives in $INSTALL_DIR rather than a temp dir. The SHA comes from the
+# release's own pyproject.toml, the one place it is pinned.
+_fetch_upstream() {
+    local sha=""
+    sha="$(curl -fsSL "$REPO_RAW_BASE/$REPO_REF/pyproject.toml" | grep -oE 'chigwell/telegram-mcp\.git@[0-9a-f]{40}' | head -1 | cut -d@ -f2)" || true
+    if [[ -z "$sha" ]]; then
+        error "Не удалось узнать, какую версию компонентов скачивать. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
+    fi
+    UPSTREAM_SOURCE="$UPSTREAM_BASE_DIR/$sha"
+    [[ -f "$UPSTREAM_SOURCE/pyproject.toml" ]] && return 0
+
+    info "Скачиваю компоненты сервера..."
+    local partial="$UPSTREAM_SOURCE.partial"
+    rm -rf "$partial"
+    mkdir -p "$partial"
+    if ! curl -fsSL "$UPSTREAM_ARCHIVE_BASE/$sha.tar.gz" | tar -xz --strip-components=1 -C "$partial"; then
+        rm -rf "$partial"
+        error "Не удалось скачать компоненты сервера. Проверьте интернет и запустите установщик ещё раз."
+        exit 1
+    fi
+    rm -rf "$UPSTREAM_SOURCE"
+    mv "$partial" "$UPSTREAM_SOURCE"
+}
+
 install_package() {
     info "Устанавливаю telegram-mcp-ag (ref: $REPO_REF)..."
-    "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
-    # --force-reinstall: the upstream telegram-mcp is pinned by SHA but keeps the
+    local package_url="$REPO_ARCHIVE_BASE/$REPO_REF.tar.gz"
+    # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
     # same version string across SHAs, so a plain install on an existing venv
     # sees "already satisfied" and leaves the old upstream under new code.
-    "$VENV_DIR/bin/python" -m pip install -q --force-reinstall "git+${REPO_URL}@${REPO_REF}"
+    if command -v uv >/dev/null 2>&1; then
+        _fetch_upstream
+        local overrides=""
+        overrides="$(mktemp)"
+        printf 'telegram-mcp @ %s\n' \
+            "$("$VENV_DIR/bin/python" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "$UPSTREAM_SOURCE")" >"$overrides"
+        uv pip install -q --python "$VENV_DIR/bin/python" --reinstall --overrides "$overrides" "$package_url"
+        rm -f "$overrides"
+    else
+        # Without uv there is no way to swap the git dependency for a local dir.
+        if ! command -v git >/dev/null 2>&1; then
+            error "Не удалось установить uv, а без него нужен Git. Установите Git с https://git-scm.com/downloads или проверьте интернет и запустите установщик ещё раз."
+            exit 1
+        fi
+        "$VENV_DIR/bin/python" -m pip install --upgrade pip -q
+        "$VENV_DIR/bin/python" -m pip install -q --force-reinstall "$package_url"
+    fi
     ok "Пакет установлен."
 }
 
@@ -241,6 +298,10 @@ install_package() {
 # a no-op on a successful run instead of undoing a perfectly good install.
 _confirm_new_venv() {
     rm -rf "$VENV_BACKUP_DIR"
+    # Older upstream copies had to survive until now: the backup venv needed them.
+    if [[ -n "$UPSTREAM_SOURCE" ]]; then
+        find "$UPSTREAM_BASE_DIR" -mindepth 1 -maxdepth 1 ! -name "$(basename "$UPSTREAM_SOURCE")" -exec rm -rf {} +
+    fi
 }
 
 # ---------------------------------------------------------------------------

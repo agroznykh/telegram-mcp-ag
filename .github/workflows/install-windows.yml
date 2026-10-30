@@ -1,0 +1,22 @@
+name: Windows install
+
+on:
+  push:
+    paths:
+      - install.ps1
+      - pyproject.toml
+      - .github/scripts/**
+      - .github/workflows/install-windows.yml
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run the install steps
+        shell: powershell
+        env:
+          TELEGRAM_MCP_AG_REF: ${{ github.sha }}
+        run: .github/scripts/test-install-windows.ps1

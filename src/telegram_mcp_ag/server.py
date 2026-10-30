@@ -109,8 +109,6 @@ _LOGIN_TOOLS: list = []
 _HIDDEN_TOOLS: dict = {}
 
 if _LOGIN_MODE:
-    import nest_asyncio
-
     from telegram_mcp_ag import login as _login
 
     _install_login_client()
@@ -811,5 +809,4 @@ def main() -> None:
         if name not in _LOGIN_TOOLS:
             _HIDDEN_TOOLS[name] = mcp._tool_manager._tools.pop(name)
 
-    nest_asyncio.apply()
     asyncio.run(_run_login_server())

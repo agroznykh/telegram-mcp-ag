@@ -4,26 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-mcp-ag"
-version = "0.3.3"
+version = "0.3.4"
 description = "Read-only Telegram MCP extension with native voice transcription"
 readme = "README.md"
-# <3.14: nest_asyncio (unmaintained, used by our own login flow; the pinned
-# upstream runtime dropped it) crashes under Python 3.14's rewritten
-# asyncio.timeout with "RuntimeError: Timeout should be used inside a task".
-requires-python = ">=3.10,<3.14"
+# No upper bound: a cap here only turns an untested Python into a hard pip error.
+# The versions users actually get are limited by PYTHON_RANGE in the installers,
+# which must match the CI matrix in .github/workflows/tests.yml.
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [
   # v3.2.90 (2026-10-19). Moved from fbb374a (2026-07-31): ~80 upstream releases.
+  # Must stay git+https, not an archive URL: upstream's install_guard refuses to
+  # start unless the installer recorded a git or file source. The installers read
+  # the SHA from this line and install from a downloaded copy, so users need no git.
   "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@6f169eacdd5582a291061ae15b4829029666f53c",
   # mcp 2.0.0 dropped mcp.server.fastmcp (FastMCP/Context), which the upstream
   # runtime imports directly, breaking every fresh install. Upstream itself now
   # requires mcp>=1.30,<2; the cap is repeated here so it survives if they relax it.
   "mcp[cli]>=1.30.0,<2.0.0",
   "python-dotenv>=1.1.0",
-  # Upstream dropped this from its own deps; our login flow (server.py) still
-  # needs it directly, so pin it here instead of relying on a transitive pull.
-  "nest-asyncio>=1.6.0",
   # QR login from the chat. pypng is qrcode's pure-Python PNG writer, so our own
   # QR code needs no imaging library. (Pillow is installed anyway now -- upstream
   # requires it for photo tools -- but nothing of ours should start depending on it.)
