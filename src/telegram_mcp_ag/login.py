@@ -31,6 +31,7 @@ from telethon.errors import ApiIdInvalidError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 from telegram_mcp_ag import config as _config
+from telegram_mcp_ag import relogin as _relogin
 
 # How long a single tool call may block waiting for the scan. MCP hosts time
 # calls out on their own, so we return "still waiting" well before that and let
@@ -41,13 +42,17 @@ PASSWORD_PROMPT_TIMEOUT_SECONDS = 180.0
 _PROMPT_TITLE = "Telegram: облачный пароль"
 _PROMPT_TEXT = "Введите облачный пароль (2FA) вашего аккаунта Telegram"
 
-_BAD_CREDENTIALS_MESSAGE = (
-    "Telegram не принял api_id и api_hash, сохранённые при установке. Чтобы ввести "
-    "их заново, запустите установщик в терминале ещё раз — он сам их спросит. "
-    "Они берутся на my.telegram.org/apps → API development tools, где api_id — "
-    "число, а api_hash — длинная строка рядом с ним. Чаще всего их путают местами "
-    "или копируют с лишним пробелом."
-)
+def _bad_credentials_message() -> str:
+    return (
+        "Telegram не принял api_id и api_hash, сохранённые при установке. Чтобы "
+        "ввести их заново, запустите установщик ещё раз -- он сам их спросит. "
+        "Ключи берутся на my.telegram.org/apps -> API development tools, где "
+        "api_id -- число, а api_hash -- длинная строка рядом с ним. Чаще всего их "
+        "путают местами или копируют с лишним пробелом. "
+        # Last, with nothing after it: a trailing period copied along with the
+        # command would turn --relogin into an unknown flag.
+        f"{_relogin.instructions()}"
+    )
 
 _state: dict = {
     "qr": None,
@@ -369,7 +374,7 @@ def register(mcp, ToolAnnotations, get_client) -> list:
 
             return ["\n".join(instructions), Image(data=png, format="png")]
         except ApiIdInvalidError:
-            return [_BAD_CREDENTIALS_MESSAGE]
+            return [_bad_credentials_message()]
         except Exception as exc:
             return [f"Не удалось начать вход в Telegram: {exc}"]
 

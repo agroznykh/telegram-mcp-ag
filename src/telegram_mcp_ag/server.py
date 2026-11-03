@@ -4,7 +4,6 @@ import asyncio
 import importlib
 import json
 import os
-import platform
 import shutil
 import sys
 import tempfile
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from telethon.errors.rpcerrorlist import (
+    AuthKeyDuplicatedError,
     AuthKeyInvalidError,
     AuthKeyUnregisteredError,
     PremiumAccountRequiredError,
@@ -22,6 +22,7 @@ from telethon.errors.rpcerrorlist import (
 from telethon.tl import functions
 
 from telegram_mcp_ag import config as _config
+from telegram_mcp_ag import relogin as _relogin
 
 # Login-only mode: credentials are there but no session is. Rather than dying
 # and sending the user to the terminal, the server comes up with only the QR
@@ -150,30 +151,15 @@ if _LOGIN_MODE:
 # binding for log_and_format_error -- patching telegram_mcp.runtime alone
 # would not reach any of them. Best effort: a module missing the attribute
 # (future upstream restructuring) is skipped rather than failing the server.
-_RELOGIN_SESSION_ERRORS = (AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError)
-
-_RELOGIN_CMD_MAC_LINUX = (
-    "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh"
-    " | bash -s -- --relogin"
+#
+# AUTH_KEY_DUPLICATED (the same session string used from two IPs at once)
+# kills the session just as dead as a revoke, and the fix is the same.
+_RELOGIN_SESSION_ERRORS = (
+    AuthKeyUnregisteredError,
+    SessionRevokedError,
+    AuthKeyInvalidError,
+    AuthKeyDuplicatedError,
 )
-_RELOGIN_CMD_WINDOWS = (
-    '$f = "$env:TEMP\\telegram-mcp-ag-install.ps1"; '
-    "iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'"
-    " -OutFile $f; & $f -Relogin"
-)
-
-
-def _relogin_instructions() -> str:
-    system = platform.system()
-    if system == "Darwin" or system == "Linux":
-        return f"Выполните на этой машине в терминале: {_RELOGIN_CMD_MAC_LINUX}"
-    if system == "Windows":
-        return f"Выполните на этой машине в PowerShell: {_RELOGIN_CMD_WINDOWS}"
-    return (
-        "Не удалось определить ОС этой машины, выберите нужную команду -- "
-        f"macOS/Linux (терминал): {_RELOGIN_CMD_MAC_LINUX} -- "
-        f"Windows (PowerShell): {_RELOGIN_CMD_WINDOWS}"
-    )
 
 
 def _relogin_user_message(error: BaseException) -> Optional[str]:
@@ -188,12 +174,13 @@ def _relogin_user_message(error: BaseException) -> Optional[str]:
             pass
         return (
             "Сессия Telegram для этого аккаунта отозвана (устройство удалено в "
-            "Telegram -> Настройки -> Устройства, либо разлогинены все сеансы разом). "
+            "Telegram -> Настройки -> Устройства, разлогинены все сеансы разом, либо "
+            "одна и та же сессия использовалась на двух компьютерах). "
             "Сброшенную сессию уже удалили -- отключите и снова включите это "
             "расширение (Claude Desktop: Settings -> Extensions) или перезапустите "
             "MCP-клиента, и попросите ассистента подключить Telegram заново: сервер "
             "покажет новый QR-код прямо в чате, терминал не нужен. Если это "
-            f"неудобно и есть терминал -- альтернатива: {_relogin_instructions()}"
+            f"неудобно и есть терминал -- альтернатива: {_relogin.instructions()}"
         )
     return None
 

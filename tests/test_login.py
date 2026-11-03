@@ -4,6 +4,7 @@ import stat
 import sys
 
 import pytest
+from telethon.errors import ApiIdInvalidError
 
 from telegram_mcp_ag import config, login
 
@@ -160,6 +161,22 @@ async def test_start_returns_instructions_and_an_image(registered):
     assert "Устройства" in text
     assert "tg://login?token=" in text
     assert image.to_image_content().mimeType == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_start_with_rejected_credentials_shows_the_relogin_command(registered, monkeypatch):
+    tools, client, _config_path = registered
+    monkeypatch.setattr(login._relogin.platform, "system", lambda: "Darwin")
+
+    async def rejected():
+        raise ApiIdInvalidError(request=None)
+
+    monkeypatch.setattr(client, "qr_login", rejected)
+
+    (message,) = await tools["telegram_login_start"]()
+
+    assert "api_id" in message
+    assert "--relogin" in message
 
 
 @pytest.mark.asyncio
