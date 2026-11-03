@@ -33,8 +33,84 @@ from telegram_mcp_ag import relogin as _relogin
 _LOGIN_MODE = False
 _LOGIN_TMPDIR = None
 
+# What Telegram answers for a session that is gone for good: revoked in
+# Settings -> Devices, all sessions ended at once, or AUTH_KEY_DUPLICATED (the
+# same session string used from two IPs at once). The fix is a fresh login.
+_RELOGIN_SESSION_ERRORS = (
+    AuthKeyUnregisteredError,
+    SessionRevokedError,
+    AuthKeyInvalidError,
+    AuthKeyDuplicatedError,
+)
+
+# Upstream checks authorization while starting and exits on a dead session,
+# before any tool runs -- so the tool-error path below that clears the session
+# never gets the chance, and every restart dies the same way. Asking Telegram
+# first turns that into the ordinary "no session" path: login mode, QR in chat.
+# A live session answers in about a second; this only bounds a hung network.
+_SESSION_CHECK_TIMEOUT_SECONDS = 5.0
+
+
+def _saved_session_is_dead() -> bool:
+    """Whether Telegram reports the configured session string as dead.
+
+    Only a definite answer counts: no network, a timeout or any other error
+    leaves the session alone, so a passing hiccup can't throw away a working
+    login. Sessions other than TELEGRAM_SESSION_STRING (file sessions, labeled
+    accounts) aren't written by this project and aren't checked.
+    """
+    session_string = os.environ.get("TELEGRAM_SESSION_STRING", "").strip()
+    if not session_string:
+        return False
+
+    import asyncio as _asyncio
+
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+
+    async def _check() -> bool:
+        client = TelegramClient(
+            StringSession(session_string),
+            int(os.environ["TELEGRAM_API_ID"].strip()),
+            os.environ["TELEGRAM_API_HASH"].strip(),
+            # The same device name the server connects with: a different one
+            # would rename this session in the user's Settings -> Devices.
+            device_model=os.environ.get("TELEGRAM_DEVICE_MODEL") or None,
+            system_version=os.environ.get("TELEGRAM_SYSTEM_VERSION") or None,
+            app_version=os.environ.get("TELEGRAM_APP_VERSION") or None,
+        )
+        try:
+            await client.connect()
+            await client(functions.updates.GetStateRequest())
+            return False
+        except _RELOGIN_SESSION_ERRORS:
+            return True
+        finally:
+            await client.disconnect()
+
+    try:
+        return _asyncio.run(
+            _asyncio.wait_for(_check(), timeout=_SESSION_CHECK_TIMEOUT_SECONDS)
+        )
+    except Exception:
+        return False
+
+
 try:
     _config.load()
+    # The test suite imports this module with made-up sessions and no network.
+    if not os.environ.get("MCP_AG_SKIP_SESSION_CHECK") and _saved_session_is_dead():
+        print(
+            "telegram-mcp-ag: Telegram reports the saved session as revoked; "
+            "removed it, starting in login mode.",
+            file=sys.stderr,
+        )
+        try:
+            _config.clear_session()
+        except OSError:
+            pass
+        os.environ.pop("TELEGRAM_SESSION_STRING", None)
+        raise _config.MissingSessionError("The saved Telegram session was revoked.")
 except _config.MissingSessionError:
     _LOGIN_MODE = True
     _LOGIN_TMPDIR = tempfile.mkdtemp(prefix="telegram-mcp-ag-bootstrap-")
@@ -151,15 +227,7 @@ if _LOGIN_MODE:
 # binding for log_and_format_error -- patching telegram_mcp.runtime alone
 # would not reach any of them. Best effort: a module missing the attribute
 # (future upstream restructuring) is skipped rather than failing the server.
-#
-# AUTH_KEY_DUPLICATED (the same session string used from two IPs at once)
-# kills the session just as dead as a revoke, and the fix is the same.
-_RELOGIN_SESSION_ERRORS = (
-    AuthKeyUnregisteredError,
-    SessionRevokedError,
-    AuthKeyInvalidError,
-    AuthKeyDuplicatedError,
-)
+# The errors themselves are _RELOGIN_SESSION_ERRORS, defined at the top.
 
 
 def _relogin_user_message(error: BaseException) -> Optional[str]:
