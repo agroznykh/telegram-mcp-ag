@@ -362,25 +362,48 @@ function Invoke-TelegramLogin {
         $useQr = $false
     }
 
-    $env:TELEGRAM_API_ID = $ApiId
-    $env:TELEGRAM_API_HASH = $ApiHash
-    $env:PYTHONUNBUFFERED = '1'
-
-    # The login command merges the session into the config.env written just
-    # before it (keeping that file's ACL), and falls back to a phone-number
-    # login on its own if the QR code is never scanned. It prints the
-    # session nowhere.
+    # The login command merges the session into config.env (keeping that
+    # file's ACL), and falls back to a phone-number login on its own if the
+    # QR code is never scanned. It prints the session nowhere. Exit code 3:
+    # Telegram rejected api_id/api_hash.
     $loginArgs = @()
     if (-not $useQr) { $loginArgs += '--phone' }
-    & (Get-VenvLoginExe) @loginArgs
-    $loginOk = ($LASTEXITCODE -eq 0)
 
-    Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
+    while ($true) {
+        $env:TELEGRAM_API_ID = $ApiId
+        $env:TELEGRAM_API_HASH = $ApiHash
+        $env:PYTHONUNBUFFERED = '1'
+        & (Get-VenvLoginExe) @loginArgs
+        $status = $LASTEXITCODE
+        Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
 
-    if (-not $loginOk) {
-        Write-Failure 'Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: .\install.ps1 -Relogin'
+        if ($status -eq 0) { return }
+        if ($status -eq 3) {
+            $creds = Read-ApiCredentials
+            $ApiId = $creds.ApiId
+            $ApiHash = $creds.ApiHash
+            Write-ConfigEnv -ApiId $ApiId -ApiHash $ApiHash
+            continue
+        }
+        Write-Failure 'Не удалось войти в Telegram. Запустите вход ещё раз: .\install.ps1 -Relogin'
         exit 1
     }
+}
+
+# api_id/api_hash don't change on a relogin -- they belong to the app on
+# my.telegram.org, not to the session -- so a config.env that already has
+# them (a relogin, or a session the server cleared after Telegram revoked
+# it) is reused without asking again. $null if either is missing.
+function Read-ConfigCredentials {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Returns both api_id and api_hash; plural is accurate.')]
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    $content = Get-Content -Raw -Path $Path
+    if ($content -notmatch '(?m)^TELEGRAM_API_ID="?([^"\r\n]+)"?\r?$') { return $null }
+    $apiId = $Matches[1]
+    if ($content -notmatch '(?m)^TELEGRAM_API_HASH="?([^"\r\n]+)"?\r?$') { return $null }
+    $apiHash = $Matches[1]
+    return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
 function Test-FullConfig {
@@ -1007,8 +1030,13 @@ function Invoke-Main {
         Write-Info "Найден существующий $ConfigPath -- использую его без повторного входа."
         Write-Info 'Чтобы войти заново (например, после отзыва сессии), запустите: .\install.ps1 -Relogin'
     } else {
-        $creds = Read-ApiCredentials
-        Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
+        $creds = Read-ConfigCredentials -Path $ConfigPath
+        if ($creds) {
+            Write-Info "Использую api_id и api_hash из $ConfigPath."
+        } else {
+            $creds = Read-ApiCredentials
+            Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
+        }
         Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
     }
 

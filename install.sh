@@ -302,14 +302,44 @@ run_telegram_login() {
     info "В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код."
     echo
 
-    # The login command merges the session into the config.env written just
-    # before it, and falls back to a phone-number login on its own if the QR
-    # code is never scanned. It prints the session nowhere.
-    if ! PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-        "$VENV_DIR/bin/telegram-mcp-ag-login" <"/dev/tty"; then
-        error "Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: bash install.sh --relogin"
+    # The login command merges the session into config.env, and falls back to
+    # a phone-number login on its own if the QR code is never scanned. It
+    # prints the session nowhere. Exit code 3: Telegram rejected api_id/api_hash.
+    local status=0
+    while true; do
+        status=0
+        PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
+            "$VENV_DIR/bin/telegram-mcp-ag-login" <"/dev/tty" || status=$?
+        if [[ "$status" -eq 0 ]]; then
+            return 0
+        fi
+        if [[ "$status" -eq 3 ]]; then
+            prompt_api_credentials
+            write_config_env
+            continue
+        fi
+        error "Не удалось войти в Telegram. Запустите вход ещё раз: bash install.sh --relogin"
         exit 1
-    fi
+    done
+}
+
+# api_id/api_hash don't change on a relogin -- they belong to the app on
+# my.telegram.org, not to the session -- so a config.env that already has
+# them (a relogin, or a session the server cleared after Telegram revoked
+# it) is reused without asking again.
+load_api_credentials() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    local id="" hash=""
+    id="$(grep -m1 -E '^TELEGRAM_API_ID=' "$f" | cut -d= -f2- || true)"
+    hash="$(grep -m1 -E '^TELEGRAM_API_HASH=' "$f" | cut -d= -f2- || true)"
+    id="${id%\"}"
+    id="${id#\"}"
+    hash="${hash%\"}"
+    hash="${hash#\"}"
+    [[ -n "$id" && -n "$hash" ]] || return 1
+    API_ID="$id"
+    API_HASH="$hash"
 }
 
 has_full_config() {
@@ -905,8 +935,12 @@ main() {
         info "Найден существующий $CONFIG_PATH -- использую его без повторного входа."
         info "Чтобы войти заново (например, после отзыва сессии), запустите: bash install.sh --relogin"
     else
-        prompt_api_credentials
-        write_config_env
+        if load_api_credentials "$CONFIG_PATH"; then
+            info "Использую api_id и api_hash из $CONFIG_PATH."
+        else
+            prompt_api_credentials
+            write_config_env
+        fi
         run_telegram_login
     fi
 

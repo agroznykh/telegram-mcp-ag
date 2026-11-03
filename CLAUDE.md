@@ -22,6 +22,7 @@ upstream chigwell/telegram-mcp, закреплён по SHA
 src/telegram_mcp_ag/
 ├── server.py     # MCP-инструменты транскрипции поверх апстрима, выбор режима
 ├── login.py      # вход по QR прямо в чате, когда сессии ещё нет
+├── terminal_login.py  # вход в терминале для установщиков: QR, запасной — по телефону
 ├── config.py     # креды из окружения и ~/telegram-mcp-ag/config.env
 └── __init__.py
 tests/            # pytest, без сети

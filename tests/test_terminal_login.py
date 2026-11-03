@@ -172,9 +172,28 @@ def test_bad_api_credentials_fail_without_phone_fallback(setup, capsys):
     with pytest.raises(SystemExit) as exc:
         terminal_login.main([])
 
-    assert exc.value.code == 1
+    assert exc.value.code == terminal_login.EXIT_BAD_CREDENTIALS
     assert "api_id" in capsys.readouterr().err
     assert "TELEGRAM_SESSION_STRING" not in path.read_text(encoding="utf-8")
+
+
+def test_new_session_replaces_old_ones_and_keeps_other_settings(setup):
+    path, use = setup
+    path.write_text(
+        "TELEGRAM_API_ID=12345\n"
+        "TELEGRAM_API_HASH=abcdef\n"
+        "TELEGRAM_SESSION_STRING_WORK=dead-session\n"
+        "TELEGRAM_EXPOSED_TOOLS=read-only\n",
+        encoding="utf-8",
+    )
+    use(FakeClient(qr_outcomes=["user"]))
+
+    terminal_login.main([])
+
+    content = path.read_text(encoding="utf-8")
+    assert "dead-session" not in content
+    assert "TELEGRAM_SESSION_STRING=SESSION-STRING" in content
+    assert "TELEGRAM_EXPOSED_TOOLS=read-only" in content
 
 
 def test_missing_credentials_exit_with_message(monkeypatch, tmp_path, capsys):

@@ -26,6 +26,9 @@ from telegram_mcp_ag import config as _config
 QR_MAX_REFRESHES = 10
 PHONE_ATTEMPTS = 3
 
+# Not 2: argparse already exits with 2 on a bad command line.
+EXIT_BAD_CREDENTIALS = 3
+
 _BAD_CREDENTIALS_MESSAGE = (
     "Telegram не принял api_id и api_hash. Проверьте их на my.telegram.org/apps "
     "-> API development tools: api_id -- число, api_hash -- длинная строка рядом "
@@ -224,8 +227,9 @@ def main(argv=None) -> None:
     try:
         session_string = asyncio.run(_login(api_id, api_hash, use_qr=not args.phone))
     except errors.ApiIdInvalidError:
+        # A distinct exit code so the installer knows to ask for them again.
         print(f"\n{_BAD_CREDENTIALS_MESSAGE}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(EXIT_BAD_CREDENTIALS)
     except LoginFailed as exc:
         print(f"\n{exc}", file=sys.stderr)
         sys.exit(1)
@@ -236,6 +240,9 @@ def main(argv=None) -> None:
         print(f"\nНе удалось войти в Telegram: {exc}", file=sys.stderr)
         sys.exit(1)
 
+    # A fresh login replaces whatever sessions the file held: on a relogin the
+    # old one is dead, and left beside the new one it would stay in use.
+    _config.clear_session(_config.CONFIG_PATH)
     _config.write_values(
         {
             "TELEGRAM_API_ID": str(api_id),

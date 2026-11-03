@@ -42,8 +42,9 @@ _PROMPT_TITLE = "Telegram: облачный пароль"
 _PROMPT_TEXT = "Введите облачный пароль (2FA) вашего аккаунта Telegram"
 
 _BAD_CREDENTIALS_MESSAGE = (
-    "Telegram не принял api_id и api_hash. Проверьте их в настройках расширения: "
-    "они берутся на my.telegram.org/apps → API development tools, где api_id — "
+    "Telegram не принял api_id и api_hash, сохранённые при установке. Чтобы ввести "
+    "их заново, запустите установщик в терминале ещё раз — он сам их спросит. "
+    "Они берутся на my.telegram.org/apps → API development tools, где api_id — "
     "число, а api_hash — длинная строка рядом с ним. Чаще всего их путают местами "
     "или копируют с лишним пробелом."
 )
@@ -70,9 +71,8 @@ def set_activation_hook(callback) -> None:
 def render_qr_png(url: str) -> bytes:
     """Render ``url`` as a PNG QR code.
 
-    Uses qrcode's pure-Python PNG writer instead of the Pillow one: the bundle
-    is installed by uv on the user's machine, and Pillow is a large wheel to
-    pull in for one black-and-white image.
+    Uses qrcode's pure-Python PNG writer instead of the Pillow one: Pillow is
+    a large wheel to depend on for one black-and-white image.
     """
     buffer = io.BytesIO()
     qrcode.make(url, image_factory=PyPNGImage, box_size=8, border=4).save(buffer)
@@ -141,8 +141,8 @@ def _password_prompt_command() -> Optional[list]:
     """Build a command that asks for a password in a native OS dialog.
 
     The password is the account's master credential, so it must not travel
-    through the conversation, and it is needed exactly once — storing it in the
-    bundle's config just to replay it later would be worse than the session
+    through the conversation, and it is needed exactly once — storing it in
+    config.env just to replay it later would be worse than the session
     string it unlocks. A local dialog keeps it off the wire and out of any file.
     """
     if sys.platform == "darwin":
@@ -207,8 +207,8 @@ async def _persist_session(client) -> str:
     session_string = StringSession.save(client.session)
 
     values = {"TELEGRAM_SESSION_STRING": session_string}
-    # The bundle passes credentials through the form, so config.env may not
-    # exist yet. Writing all three keeps every client working off one file,
+    # The credentials may have come from the environment rather than
+    # config.env. Writing all three keeps every client working off one file,
     # which is where this project keeps secrets.
     for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
         value = os.environ.get(key, "").strip()
