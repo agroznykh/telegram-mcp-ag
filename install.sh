@@ -38,18 +38,16 @@ UPSTREAM_SOURCE=""
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
-# Filled in by prompt_api_credentials()/run_telegram_login() before
-# run_telegram_login()/write_config_env() read them. Pre-declared (empty)
-# so `set -u` doesn't complain if that ever changes.
+# Filled in by prompt_api_credentials() before write_config_env() reads
+# them. Pre-declared (empty) so `set -u` doesn't complain if that ever changes.
 API_ID=""
 API_HASH=""
-SESSION_VAR=""
-SESSION_STRING=""
 OS=""
 ARCH=""
 
-# Set by prompt_auto_approve(), read by register_claude_code()/register_codex().
-AUTO_APPROVE_TOOLS=0
+# Read by register_claude_code()/register_codex(). Always on, without asking:
+# the server is read-only, so a confirmation on every call protects nothing.
+AUTO_APPROVE_TOOLS=1
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -298,65 +296,20 @@ prompt_api_credentials() {
     done
 }
 
-prompt_auto_approve() {
-    echo
-    info "Сервер умеет только читать Telegram -- отправка сообщений и другие"
-    info "изменяющие действия физически недоступны, независимо от ответа ниже."
-    if confirm "Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?"; then
-        AUTO_APPROVE_TOOLS=1
-    else
-        AUTO_APPROVE_TOOLS=0
-        info "Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента."
-    fi
-}
-
 run_telegram_login() {
     echo
     info "Вход в Telegram: сейчас появится QR-код."
     info "В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код."
-    warn "На вопрос генератора сессии \"Would you like to automatically update your .env file? (y/N)\" в конце ответьте n -- этот установщик сам запишет config.env."
     echo
 
-    local log_file=""
-    log_file="$(mktemp)"
-    local login_ok=0
-
-    PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-        "$VENV_DIR/bin/telegram-mcp-generate-session" --qr <"/dev/tty" | tee "$log_file" || login_ok=1
-
-    if [[ "$login_ok" -ne 0 ]]; then
-        warn "Вход по QR-коду не удался, пробую вход по номеру телефона."
-        : >"$log_file"
-        login_ok=0
-        PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-            "$VENV_DIR/bin/telegram-mcp-generate-session" --phone <"/dev/tty" | tee "$log_file" || login_ok=1
-    fi
-
-    # A stray plaintext .env may appear here if the login script's own
-    # "update .env?" prompt was answered y. We already parse the session
-    # string from the transcript above, so this file is redundant and, at
-    # default permissions, not protected the way config.env is -- remove it.
-    rm -f "$INSTALL_DIR/.env"
-
-    if [[ "$login_ok" -ne 0 ]]; then
-        rm -f "$log_file"
+    # The login command merges the session into the config.env written just
+    # before it, and falls back to a phone-number login on its own if the QR
+    # code is never scanned. It prints the session nowhere.
+    if ! PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
+        "$VENV_DIR/bin/telegram-mcp-ag-login" <"/dev/tty"; then
         error "Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: bash install.sh --relogin"
         exit 1
     fi
-
-    # The generator names the variable TELEGRAM_SESSION_STRING by default,
-    # or TELEGRAM_SESSION_STRING_<LABEL> if a label was typed at its prompt.
-    local session_line=""
-    session_line="$(grep -m1 -E '^TELEGRAM_SESSION_STRING(_[A-Za-z0-9_]+)?=' "$log_file" || true)"
-    rm -f "$log_file"
-
-    if [[ -z "$session_line" ]]; then
-        error "Не удалось получить строку сессии из вывода входа."
-        exit 1
-    fi
-
-    SESSION_VAR="${session_line%%=*}"
-    SESSION_STRING="${session_line#*=}"
 }
 
 has_full_config() {
@@ -381,7 +334,6 @@ write_config_env() {
         {
             printf 'TELEGRAM_API_ID=%s\n' "$API_ID"
             printf 'TELEGRAM_API_HASH=%s\n' "$API_HASH"
-            printf '%s=%s\n' "$SESSION_VAR" "$SESSION_STRING"
             printf 'TELEGRAM_EXPOSED_TOOLS=read-only\n'
             printf 'TELEGRAM_DEVICE_MODEL=%s\n' "$device_model"
         } >"$CONFIG_PATH"
@@ -954,11 +906,10 @@ main() {
         info "Чтобы войти заново (например, после отзыва сессии), запустите: bash install.sh --relogin"
     else
         prompt_api_credentials
-        run_telegram_login
         write_config_env
+        run_telegram_login
     fi
 
-    prompt_auto_approve
     register_claude_code
     register_codex
     register_claude_desktop

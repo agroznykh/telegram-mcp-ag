@@ -99,8 +99,9 @@ $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
 $script:MaintenanceVenvs = New-Object System.Collections.Generic.List[string]
-# Set by Request-AutoApprove(), read by Register-ClaudeCode()/Register-Codex().
-$script:AutoApproveTools = $false
+# Read by Register-ClaudeCode()/Register-Codex(). Always on, without asking:
+# the server is read-only, so a confirmation on every call protects nothing.
+$script:AutoApproveTools = $true
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -204,7 +205,7 @@ function Initialize-PythonAndVenv {
 
 function Get-VenvPython { Join-Path $VenvDir 'Scripts\python.exe' }
 function Get-VenvServerExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag.exe' }
-function Get-VenvGenerateSessionExe { Join-Path $VenvDir 'Scripts\telegram-mcp-generate-session.exe' }
+function Get-VenvLoginExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag-login.exe' }
 
 # Downloads the pinned upstream source, so installing needs no git. An archive
 # URL won't do: upstream's install_guard accepts only a git or file:// install,
@@ -340,24 +341,12 @@ function Read-ApiCredentials {
     return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
-function Request-AutoApprove {
-    Write-Host ''
-    Write-Info 'Сервер умеет только читать Telegram -- отправка сообщений и другие'
-    Write-Info 'изменяющие действия физически недоступны, независимо от ответа ниже.'
-    if (Confirm-Action 'Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?') {
-        return $true
-    }
-    Write-Info 'Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента.'
-    return $false
-}
-
 function Invoke-TelegramLogin {
     param([string]$ApiId, [string]$ApiHash, [switch]$Qr, [switch]$Phone)
 
     Write-Host ''
     Write-Info 'Вход в Telegram.'
     Write-Info 'В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код.'
-    Write-Warn 'На вопрос генератора сессии "Would you like to automatically update your .env file? (y/N)" в конце ответьте n -- этот установщик сам запишет config.env.'
     Write-Host ''
 
     $useQr = $true
@@ -377,54 +366,20 @@ function Invoke-TelegramLogin {
     $env:TELEGRAM_API_HASH = $ApiHash
     $env:PYTHONUNBUFFERED = '1'
 
-    $logFile = [System.IO.Path]::GetTempFileName()
-    $exe = Get-VenvGenerateSessionExe
-    $loginOk = $false
-
-    if ($useQr) {
-        & $exe --qr 2>&1 | Tee-Object -FilePath $logFile
-        $loginOk = ($LASTEXITCODE -eq 0)
-        if (-not $loginOk) {
-            Write-Warn 'Вход по QR-коду не удался, пробую вход по номеру телефона.'
-        }
-    }
-
-    if (-not $loginOk) {
-        Set-Content -Path $logFile -Value $null
-        & $exe --phone 2>&1 | Tee-Object -FilePath $logFile
-        $loginOk = ($LASTEXITCODE -eq 0)
-    }
+    # The login command merges the session into the config.env written just
+    # before it (keeping that file's ACL), and falls back to a phone-number
+    # login on its own if the QR code is never scanned. It prints the
+    # session nowhere.
+    $loginArgs = @()
+    if (-not $useQr) { $loginArgs += '--phone' }
+    & (Get-VenvLoginExe) @loginArgs
+    $loginOk = ($LASTEXITCODE -eq 0)
 
     Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
 
-    # A stray plaintext .env may appear here if the login script's own
-    # "update .env?" prompt was answered y. We already parse the session
-    # string from the transcript below, so this file is redundant and not
-    # locked down the way config.env is -- remove it.
-    $strayEnv = Join-Path $InstallDir '.env'
-    if (Test-Path $strayEnv) { Remove-Item -Force $strayEnv }
-
     if (-not $loginOk) {
-        Remove-Item -Force $logFile -ErrorAction SilentlyContinue
         Write-Failure 'Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: .\install.ps1 -Relogin'
         exit 1
-    }
-
-    # The generator names the variable TELEGRAM_SESSION_STRING by default,
-    # or TELEGRAM_SESSION_STRING_<LABEL> if a label was typed at its prompt.
-    $sessionLine = Select-String -Path $logFile -Pattern '^TELEGRAM_SESSION_STRING([A-Za-z0-9_]*)?=' |
-        Select-Object -First 1 -ExpandProperty Line
-    Remove-Item -Force $logFile -ErrorAction SilentlyContinue
-
-    if ([string]::IsNullOrEmpty($sessionLine)) {
-        Write-Failure 'Не удалось получить строку сессии из вывода входа.'
-        exit 1
-    }
-
-    $splitIndex = $sessionLine.IndexOf('=')
-    return @{
-        Var   = $sessionLine.Substring(0, $splitIndex)
-        Value = $sessionLine.Substring($splitIndex + 1)
     }
 }
 
@@ -456,7 +411,7 @@ function Protect-ConfigFile {
 }
 
 function Write-ConfigEnv {
-    param([string]$ApiId, [string]$ApiHash, [string]$SessionVar, [string]$SessionValue)
+    param([string]$ApiId, [string]$ApiHash)
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if (Test-Path $ConfigPath) {
@@ -468,7 +423,6 @@ function Write-ConfigEnv {
     $lines = @(
         "TELEGRAM_API_ID=$ApiId"
         "TELEGRAM_API_HASH=$ApiHash"
-        "$SessionVar=$SessionValue"
         'TELEGRAM_EXPOSED_TOOLS=read-only'
         "TELEGRAM_DEVICE_MODEL=$deviceModel"
     )
@@ -1054,11 +1008,9 @@ function Invoke-Main {
         Write-Info 'Чтобы войти заново (например, после отзыва сессии), запустите: .\install.ps1 -Relogin'
     } else {
         $creds = Read-ApiCredentials
-        $session = Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
-        Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash -SessionVar $session.Var -SessionValue $session.Value
+        Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
+        Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
     }
-
-    $script:AutoApproveTools = Request-AutoApprove
 
     # Each step degrades independently: a client that isn't installed, or
     # an unexpected error registering one of them, must not stop the rest
