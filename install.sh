@@ -651,30 +651,34 @@ _install_claude_skill() {
 }
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
-# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for readers who add the skill by hand, so both
-# routes end up with byte-identical output, and the user never has to
-# archive anything themselves.
+# telegram-digest/ folder, not a bare SKILL.md -- the repo carries it ready
+# built, named telegram-digest-skill-<version>.zip, so the user never has to
+# archive anything themselves. It goes straight to Downloads, under the same
+# name: that's where README tells users to look for it, since it's a folder
+# every non-developer already knows how to find. The version in the name
+# tells uploads of different skill versions apart.
 _install_claude_skill_zip() {
-    if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest.zip" \
-        -o "$INSTALL_DIR/telegram-digest-skill.zip" 2>/dev/null; then
-        # Also copy to Downloads -- that's where README tells users to look for
-        # it, since it's a folder every non-developer already knows how to find
-        # (unlike $INSTALL_DIR). mkdir -p/cp -f so an existing file from a
-        # previous run is silently replaced, never an error.
-        mkdir -p "$HOME/Downloads" 2>/dev/null
-        # The version in the name tells uploads of different skill versions
-        # apart. Releases from before skills had a version get the plain name.
-        local version="" downloads_name="telegram-digest-skill.zip"
-        version="$(curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest/SKILL.md" 2>/dev/null |
-            sed -nE 's/^[[:space:]]+version: "([0-9]+\.[0-9]+)"[[:space:]]*$/\1/p' | head -1)" || true
-        [[ -n "$version" ]] && downloads_name="telegram-digest-skill-$version.zip"
-        cp -f "$INSTALL_DIR/telegram-digest-skill.zip" "$HOME/Downloads/$downloads_name" 2>/dev/null || true
-        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $HOME/Downloads/$downloads_name"
+    local base="https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills"
+    local version="" name="telegram-digest-skill.zip"
+    version="$(curl -fsSL "$base/telegram-digest/SKILL.md" 2>/dev/null |
+        sed -nE 's/^[[:space:]]+version: "([0-9]+\.[0-9]+)"[[:space:]]*$/\1/p' | head -1)" || true
+    [[ -n "$version" ]] && name="telegram-digest-skill-$version.zip"
+
+    mkdir -p "$HOME/Downloads" 2>/dev/null
+    local dest="$HOME/Downloads/$name"
+    # Releases from before the zip carried its version in the repo have it
+    # as telegram-digest.zip; the fallback can go once every release has the
+    # new name.
+    if curl -fsSL "$base/$name" -o "$dest" 2>/dev/null ||
+        curl -fsSL "$base/telegram-digest.zip" -o "$dest" 2>/dev/null; then
+        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $dest"
+        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл $name из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     else
+        rm -f "$dest"
         warn "Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него."
-        rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
     fi
+    # Earlier installers kept a copy here too; nothing reads it.
+    rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
 }
 
 install_claude_skills() {
@@ -692,7 +696,6 @@ install_claude_skills() {
     if [[ "$have_desktop" -eq 1 ]]; then
         ( set +eu; _install_claude_skill_zip ) \
             || warn "Не удалось подготовить архив скилла -- не критично, остальное работает и без него."
-        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     fi
 }
 

@@ -777,41 +777,46 @@ function Install-ClaudeSkill {
 }
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
-# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for readers who add the skill by hand, so both
-# routes end up with byte-identical output and nobody has to zip anything
-# themselves.
+# telegram-digest/ folder, not a bare SKILL.md -- the repo carries it ready
+# built, named telegram-digest-skill-<version>.zip, so nobody has to zip
+# anything themselves. It goes straight to Downloads, under the same name:
+# that's where README tells users to look for it, since it's a folder every
+# non-developer already knows how to find. The version in the name tells
+# uploads of different skill versions apart.
 function Install-ClaudeSkillZip {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
     param()
 
-    $out = Join-Path $InstallDir 'telegram-digest-skill.zip'
-    $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest.zip"
+    $base = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills"
+    $name = 'telegram-digest-skill.zip'
     try {
-        Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
-        # Also copy to Downloads -- that's where README tells users to look for
-        # it, since it's a folder every non-developer already knows how to find
-        # (unlike $InstallDir). -Force silently replaces a file left over from
-        # a previous run, never an error.
-        $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
-        New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
-        # The version in the name tells uploads of different skill versions
-        # apart. Releases from before skills had a version get the plain name.
-        $downloadsName = 'telegram-digest-skill.zip'
-        try {
-            $skillMd = Invoke-RestMethod -Uri "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest/SKILL.md" -ErrorAction Stop
-            $versionMatch = [regex]::Match($skillMd, '(?m)^\s+version: "(\d+\.\d+)"\s*$')
-            if ($versionMatch.Success) { $downloadsName = "telegram-digest-skill-$($versionMatch.Groups[1].Value).zip" }
-        } catch {
-            Write-Verbose "Could not read the skill version: $($_.Exception.Message)"
-        }
-        $downloadsOut = Join-Path $downloadsDir $downloadsName
-        Copy-Item -Path $out -Destination $downloadsOut -Force -ErrorAction SilentlyContinue
-        Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $downloadsOut"
+        $skillMd = Invoke-RestMethod -Uri "$base/telegram-digest/SKILL.md" -ErrorAction Stop
+        $versionMatch = [regex]::Match($skillMd, '(?m)^\s+version: "(\d+\.\d+)"\s*$')
+        if ($versionMatch.Success) { $name = "telegram-digest-skill-$($versionMatch.Groups[1].Value).zip" }
     } catch {
-        Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
-        Remove-Item -Force $out -ErrorAction SilentlyContinue
+        Write-Verbose "Could not read the skill version: $($_.Exception.Message)"
     }
+
+    $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
+    New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
+    $dest = Join-Path $downloadsDir $name
+    try {
+        try {
+            Invoke-WebRequest -Uri "$base/$name" -OutFile $dest -ErrorAction Stop
+        } catch {
+            # Releases from before the zip carried its version in the repo have
+            # it as telegram-digest.zip; the fallback can go once every release
+            # has the new name.
+            Invoke-WebRequest -Uri "$base/telegram-digest.zip" -OutFile $dest -ErrorAction Stop
+        }
+        Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $dest"
+        Write-Info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл $name из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
+    } catch {
+        Remove-Item -Force $dest -ErrorAction SilentlyContinue
+        Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
+    }
+    # Earlier installers kept a copy here too; nothing reads it.
+    Remove-Item -Force (Join-Path $InstallDir 'telegram-digest-skill.zip') -ErrorAction SilentlyContinue
 }
 
 function Install-ClaudeSkills {
@@ -833,7 +838,6 @@ function Install-ClaudeSkills {
         } catch {
             Write-Warn 'Не удалось подготовить архив скилла -- не критично, остальное работает и без него.'
         }
-        Write-Info 'В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README).'
     }
 }
 
