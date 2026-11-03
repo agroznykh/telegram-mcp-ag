@@ -20,9 +20,9 @@ def clean_telegram_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def reset_login_state():
-    login._state.update({"qr": None, "task": None, "qr_path": None, "tmpdir": None})
+    login._state.update({"qr": None, "task": None, "page_path": None, "tmpdir": None})
     yield
-    login._state.update({"qr": None, "task": None, "qr_path": None, "tmpdir": None})
+    login._state.update({"qr": None, "task": None, "page_path": None, "tmpdir": None})
 
 
 # ---------------------------------------------------------------------------
@@ -135,16 +135,35 @@ def test_render_qr_png_produces_a_png():
     assert len(png) < 100_000
 
 
-def test_qr_file_is_owner_only(monkeypatch):
-    monkeypatch.setattr(login, "_open_in_viewer", lambda path: False)
-    path, opened = login._write_qr_file(login.render_qr_png("tg://login?token=abc"))
+def test_qr_page_is_owner_only_reloads_itself_and_is_removed(monkeypatch):
+    opened_paths = []
+    monkeypatch.setattr(login, "_open_in_viewer", lambda path: opened_paths.append(path) or True)
+    url = "tg://login?token=abc"
+    path, opened = login._show_qr_page(login.render_qr_png(url), url, open_it=True)
     try:
-        assert path is not None and not opened
+        assert path is not None and opened and opened_paths == [path]
+        page = path.read_text(encoding="utf-8")
+        assert 'http-equiv="refresh"' in page
+        assert "data:image/png;base64," in page
+        assert url in page
         if os.name == "posix":
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
     finally:
-        login._cleanup_qr_file()
+        # Outside an event loop the "done" page is removed at once.
+        login._finish_qr_page()
     assert not path.exists()
+
+
+def test_refreshing_the_page_does_not_open_another_window(monkeypatch):
+    opened_paths = []
+    monkeypatch.setattr(login, "_open_in_viewer", lambda path: opened_paths.append(path) or True)
+    try:
+        login._show_qr_page(login.render_qr_png("tg://a"), "tg://a", open_it=True)
+        path, opened = login._show_qr_page(login.render_qr_png("tg://b"), "tg://b", open_it=False)
+        assert not opened and len(opened_paths) == 1
+        assert "tg://b" in path.read_text(encoding="utf-8")
+    finally:
+        login._finish_qr_page()
 
 
 # ---------------------------------------------------------------------------
@@ -200,18 +219,35 @@ async def test_check_before_start_says_so(registered):
 
 
 @pytest.mark.asyncio
-async def test_expired_token_is_replaced_with_a_fresh_code(registered, monkeypatch):
+async def test_expired_code_is_replaced_on_the_page_without_the_assistant(registered, monkeypatch):
     tools, client, _config_path = registered
-    monkeypatch.setattr(login, "WAIT_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(login, "WAIT_TIMEOUT_SECONDS", 0.05)
 
     await tools["telegram_login_start"]()
     # Telethon signals an expired login token by failing the wait with TimeoutError.
+    client.qr.result.set_exception(asyncio.TimeoutError())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert client.qr.recreated == 1
+    assert client.qr.url in login._state["page_path"].read_text(encoding="utf-8")
+    (message,) = await tools["telegram_login_check"]()
+    assert "Пока жду сканирования" in message
+
+
+@pytest.mark.asyncio
+async def test_login_starts_over_once_every_code_expired(registered, monkeypatch):
+    tools, client, _config_path = registered
+    monkeypatch.setattr(login, "WAIT_TIMEOUT_SECONDS", 5)
+    monkeypatch.setattr(login, "QR_MAX_CODES", 1)
+
+    await tools["telegram_login_start"]()
     client.qr.result.set_exception(asyncio.TimeoutError())
 
     text, image = await tools["telegram_login_check"]()
 
     assert client.qr.recreated == 1
-    assert "устарел" in text
+    assert "устарели" in text
     assert image.to_image_content().mimeType == "image/png"
 
 
