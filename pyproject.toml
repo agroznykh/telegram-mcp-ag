@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "telegram-mcp-ag"
-version = "0.3.6"
+version = "0.4.0"
 description = "Read-only Telegram MCP extension with native voice transcription"
 readme = "README.md"
 # The one version the installers put users on (PYTHON_VERSION) and CI tests. No
@@ -35,6 +35,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 telegram-mcp-ag = "telegram_mcp_ag.server:main"
+telegram-mcp-ag-login = "telegram_mcp_ag.terminal_login:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -99,8 +99,9 @@ $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
 $script:MaintenanceVenvs = New-Object System.Collections.Generic.List[string]
-# Set by Request-AutoApprove(), read by Register-ClaudeCode()/Register-Codex().
-$script:AutoApproveTools = $false
+# Read by Register-ClaudeCode()/Register-Codex(). Always on, without asking:
+# the server is read-only, so a confirmation on every call protects nothing.
+$script:AutoApproveTools = $true
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -204,7 +205,7 @@ function Initialize-PythonAndVenv {
 
 function Get-VenvPython { Join-Path $VenvDir 'Scripts\python.exe' }
 function Get-VenvServerExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag.exe' }
-function Get-VenvGenerateSessionExe { Join-Path $VenvDir 'Scripts\telegram-mcp-generate-session.exe' }
+function Get-VenvLoginExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag-login.exe' }
 
 # Downloads the pinned upstream source, so installing needs no git. An archive
 # URL won't do: upstream's install_guard accepts only a git or file:// install,
@@ -340,24 +341,12 @@ function Read-ApiCredentials {
     return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
-function Request-AutoApprove {
-    Write-Host ''
-    Write-Info 'Сервер умеет только читать Telegram -- отправка сообщений и другие'
-    Write-Info 'изменяющие действия физически недоступны, независимо от ответа ниже.'
-    if (Confirm-Action 'Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?') {
-        return $true
-    }
-    Write-Info 'Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента.'
-    return $false
-}
-
 function Invoke-TelegramLogin {
     param([string]$ApiId, [string]$ApiHash, [switch]$Qr, [switch]$Phone)
 
     Write-Host ''
     Write-Info 'Вход в Telegram.'
     Write-Info 'В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код.'
-    Write-Warn 'На вопрос генератора сессии "Would you like to automatically update your .env file? (y/N)" в конце ответьте n -- этот установщик сам запишет config.env.'
     Write-Host ''
 
     $useQr = $true
@@ -373,59 +362,48 @@ function Invoke-TelegramLogin {
         $useQr = $false
     }
 
-    $env:TELEGRAM_API_ID = $ApiId
-    $env:TELEGRAM_API_HASH = $ApiHash
-    $env:PYTHONUNBUFFERED = '1'
+    # The login command merges the session into config.env (keeping that
+    # file's ACL), and falls back to a phone-number login on its own if the
+    # QR code is never scanned. It prints the session nowhere. Exit code 3:
+    # Telegram rejected api_id/api_hash.
+    $loginArgs = @()
+    if (-not $useQr) { $loginArgs += '--phone' }
 
-    $logFile = [System.IO.Path]::GetTempFileName()
-    $exe = Get-VenvGenerateSessionExe
-    $loginOk = $false
+    while ($true) {
+        $env:TELEGRAM_API_ID = $ApiId
+        $env:TELEGRAM_API_HASH = $ApiHash
+        $env:PYTHONUNBUFFERED = '1'
+        & (Get-VenvLoginExe) @loginArgs
+        $status = $LASTEXITCODE
+        Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
 
-    if ($useQr) {
-        & $exe --qr 2>&1 | Tee-Object -FilePath $logFile
-        $loginOk = ($LASTEXITCODE -eq 0)
-        if (-not $loginOk) {
-            Write-Warn 'Вход по QR-коду не удался, пробую вход по номеру телефона.'
+        if ($status -eq 0) { return }
+        if ($status -eq 3) {
+            $creds = Read-ApiCredentials
+            $ApiId = $creds.ApiId
+            $ApiHash = $creds.ApiHash
+            Write-ConfigEnv -ApiId $ApiId -ApiHash $ApiHash
+            continue
         }
-    }
-
-    if (-not $loginOk) {
-        Set-Content -Path $logFile -Value $null
-        & $exe --phone 2>&1 | Tee-Object -FilePath $logFile
-        $loginOk = ($LASTEXITCODE -eq 0)
-    }
-
-    Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
-
-    # A stray plaintext .env may appear here if the login script's own
-    # "update .env?" prompt was answered y. We already parse the session
-    # string from the transcript below, so this file is redundant and not
-    # locked down the way config.env is -- remove it.
-    $strayEnv = Join-Path $InstallDir '.env'
-    if (Test-Path $strayEnv) { Remove-Item -Force $strayEnv }
-
-    if (-not $loginOk) {
-        Remove-Item -Force $logFile -ErrorAction SilentlyContinue
-        Write-Failure 'Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: .\install.ps1 -Relogin'
+        Write-Failure 'Не удалось войти в Telegram. Запустите вход ещё раз: .\install.ps1 -Relogin'
         exit 1
     }
+}
 
-    # The generator names the variable TELEGRAM_SESSION_STRING by default,
-    # or TELEGRAM_SESSION_STRING_<LABEL> if a label was typed at its prompt.
-    $sessionLine = Select-String -Path $logFile -Pattern '^TELEGRAM_SESSION_STRING([A-Za-z0-9_]*)?=' |
-        Select-Object -First 1 -ExpandProperty Line
-    Remove-Item -Force $logFile -ErrorAction SilentlyContinue
-
-    if ([string]::IsNullOrEmpty($sessionLine)) {
-        Write-Failure 'Не удалось получить строку сессии из вывода входа.'
-        exit 1
-    }
-
-    $splitIndex = $sessionLine.IndexOf('=')
-    return @{
-        Var   = $sessionLine.Substring(0, $splitIndex)
-        Value = $sessionLine.Substring($splitIndex + 1)
-    }
+# api_id/api_hash don't change on a relogin -- they belong to the app on
+# my.telegram.org, not to the session -- so a config.env that already has
+# them (a relogin, or a session the server cleared after Telegram revoked
+# it) is reused without asking again. $null if either is missing.
+function Read-ConfigCredentials {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Returns both api_id and api_hash; plural is accurate.')]
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    $content = Get-Content -Raw -Path $Path
+    if ($content -notmatch '(?m)^TELEGRAM_API_ID="?([^"\r\n]+)"?\r?$') { return $null }
+    $apiId = $Matches[1]
+    if ($content -notmatch '(?m)^TELEGRAM_API_HASH="?([^"\r\n]+)"?\r?$') { return $null }
+    $apiHash = $Matches[1]
+    return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
 function Test-FullConfig {
@@ -456,7 +434,7 @@ function Protect-ConfigFile {
 }
 
 function Write-ConfigEnv {
-    param([string]$ApiId, [string]$ApiHash, [string]$SessionVar, [string]$SessionValue)
+    param([string]$ApiId, [string]$ApiHash)
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if (Test-Path $ConfigPath) {
@@ -468,7 +446,6 @@ function Write-ConfigEnv {
     $lines = @(
         "TELEGRAM_API_ID=$ApiId"
         "TELEGRAM_API_HASH=$ApiHash"
-        "$SessionVar=$SessionValue"
         'TELEGRAM_EXPOSED_TOOLS=read-only'
         "TELEGRAM_DEVICE_MODEL=$deviceModel"
     )
@@ -482,7 +459,7 @@ function Write-ConfigEnv {
     [System.IO.File]::WriteAllText($ConfigPath, $content, $utf8NoBom)
 
     Protect-ConfigFile -Path $ConfigPath
-    Write-Ok "config.env записан ($ConfigPath, доступ только для вашей учётной записи)."
+    Write-Ok 'api_id и api_hash сохранены.'
 }
 
 # ---------------------------------------------------------------------------
@@ -800,41 +777,46 @@ function Install-ClaudeSkill {
 }
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
-# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for readers who add the skill by hand, so both
-# routes end up with byte-identical output and nobody has to zip anything
-# themselves.
+# telegram-digest/ folder, not a bare SKILL.md -- the repo carries it ready
+# built, named telegram-digest-skill-<version>.zip, so nobody has to zip
+# anything themselves. It goes straight to Downloads, under the same name:
+# that's where README tells users to look for it, since it's a folder every
+# non-developer already knows how to find. The version in the name tells
+# uploads of different skill versions apart.
 function Install-ClaudeSkillZip {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
     param()
 
-    $out = Join-Path $InstallDir 'telegram-digest-skill.zip'
-    $url = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest.zip"
+    $base = "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills"
+    $name = 'telegram-digest-skill.zip'
     try {
-        Invoke-WebRequest -Uri $url -OutFile $out -ErrorAction Stop
-        # Also copy to Downloads -- that's where README tells users to look for
-        # it, since it's a folder every non-developer already knows how to find
-        # (unlike $InstallDir). -Force silently replaces a file left over from
-        # a previous run, never an error.
-        $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
-        New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
-        # The version in the name tells uploads of different skill versions
-        # apart. Releases from before skills had a version get the plain name.
-        $downloadsName = 'telegram-digest-skill.zip'
-        try {
-            $skillMd = Invoke-RestMethod -Uri "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$RepoRef/.claude/skills/telegram-digest/SKILL.md" -ErrorAction Stop
-            $versionMatch = [regex]::Match($skillMd, '(?m)^\s+version: "(\d+\.\d+)"\s*$')
-            if ($versionMatch.Success) { $downloadsName = "telegram-digest-skill-$($versionMatch.Groups[1].Value).zip" }
-        } catch {
-            Write-Verbose "Could not read the skill version: $($_.Exception.Message)"
-        }
-        $downloadsOut = Join-Path $downloadsDir $downloadsName
-        Copy-Item -Path $out -Destination $downloadsOut -Force -ErrorAction SilentlyContinue
-        Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $downloadsOut"
+        $skillMd = Invoke-RestMethod -Uri "$base/telegram-digest/SKILL.md" -ErrorAction Stop
+        $versionMatch = [regex]::Match($skillMd, '(?m)^\s+version: "(\d+\.\d+)"\s*$')
+        if ($versionMatch.Success) { $name = "telegram-digest-skill-$($versionMatch.Groups[1].Value).zip" }
     } catch {
-        Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
-        Remove-Item -Force $out -ErrorAction SilentlyContinue
+        Write-Verbose "Could not read the skill version: $($_.Exception.Message)"
     }
+
+    $downloadsDir = Join-Path $env:USERPROFILE 'Downloads'
+    New-Item -ItemType Directory -Force -Path $downloadsDir | Out-Null
+    $dest = Join-Path $downloadsDir $name
+    try {
+        try {
+            Invoke-WebRequest -Uri "$base/$name" -OutFile $dest -ErrorAction Stop
+        } catch {
+            # Releases from before the zip carried its version in the repo have
+            # it as telegram-digest.zip; the fallback can go once every release
+            # has the new name.
+            Invoke-WebRequest -Uri "$base/telegram-digest.zip" -OutFile $dest -ErrorAction Stop
+        }
+        Write-Ok "Готовый архив скилла для Claude Desktop (в Загрузках): $dest"
+        Write-Info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл $name из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
+    } catch {
+        Remove-Item -Force $dest -ErrorAction SilentlyContinue
+        Write-Warn 'Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него.'
+    }
+    # Earlier installers kept a copy here too; nothing reads it.
+    Remove-Item -Force (Join-Path $InstallDir 'telegram-digest-skill.zip') -ErrorAction SilentlyContinue
 }
 
 function Install-ClaudeSkills {
@@ -856,7 +838,6 @@ function Install-ClaudeSkills {
         } catch {
             Write-Warn 'Не удалось подготовить архив скилла -- не критично, остальное работает и без него.'
         }
-        Write-Info 'В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README).'
     }
 }
 
@@ -910,7 +891,7 @@ function Invoke-SelfCheck {
     } else {
         Write-Warn 'Самопроверка не прошла:'
         Write-Host $outputText
-        Write-Warn "config.env записан, но сервер пока не отвечает как ожидалось. Запустите вручную: $(Get-VenvServerExe)"
+        Write-Warn "Настройки сохранены, но сервер пока не отвечает как ожидалось. Запустите вручную: $(Get-VenvServerExe)"
     }
 }
 
@@ -930,7 +911,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     }
 
     Write-Host ''
-    Write-Ok "Готово! telegram-mcp-ag установлен в $InstallDir"
+    Write-Ok 'Готово! telegram-mcp-ag установлен.'
     Write-Host ''
     Write-Host 'Что дальше:'
     Write-Host '  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты.'
@@ -940,8 +921,6 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     }
     Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии): .\install.ps1 -Relogin'
     Write-Host '  - Полное удаление: .\install.ps1 -Uninstall'
-    Write-Host ''
-    Write-Host "Секреты лежат в $ConfigPath (доступ только для вашей учётной записи). Никому их не показывайте и не публикуйте."
 }
 
 # ---------------------------------------------------------------------------
@@ -1050,15 +1029,18 @@ function Invoke-Main {
     Confirm-NewVenv
 
     if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
-        Write-Info "Найден существующий $ConfigPath -- использую его без повторного входа."
+        Write-Info 'Вход в Telegram уже выполнен -- использую сохранённую сессию.'
         Write-Info 'Чтобы войти заново (например, после отзыва сессии), запустите: .\install.ps1 -Relogin'
     } else {
-        $creds = Read-ApiCredentials
-        $session = Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
-        Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash -SessionVar $session.Var -SessionValue $session.Value
+        $creds = Read-ConfigCredentials -Path $ConfigPath
+        if ($creds) {
+            Write-Info 'Использую сохранённые api_id и api_hash.'
+        } else {
+            $creds = Read-ApiCredentials
+            Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
+        }
+        Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
     }
-
-    $script:AutoApproveTools = Request-AutoApprove
 
     # Each step degrades independently: a client that isn't installed, or
     # an unexpected error registering one of them, must not stop the rest

@@ -1,7 +1,7 @@
-"""telegram-digest.zip is a checked-in build artifact (not generated at
-install time) so both install.sh/install.ps1 and the README's direct-download
-link can serve it byte-identical, without a zip tool on the user's machine.
-This guards it against going stale relative to the SKILL.md it's built from.
+"""telegram-digest-skill-<version>.zip is a checked-in build artifact (not
+generated at install time) so install.sh/install.ps1 can serve it without a
+zip tool on the user's machine. This guards it against going stale relative
+to the SKILL.md it's built from, or carrying another version's name.
 """
 import hashlib
 import re
@@ -11,7 +11,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
 SKILL_MD = SKILLS_DIR / "telegram-digest" / "SKILL.md"
-ZIP_PATH = SKILLS_DIR / "telegram-digest.zip"
 
 # Claude Desktop shows this as the skill's Version, and the installers read it for
 # the zip's name.
@@ -21,6 +20,8 @@ METADATA_VERSION = re.compile(r'^metadata:\n  version: "(\d+\.\d+)"\n', re.MULTI
 # entry; a known one must not change, which is what forces the version bump.
 SKILL_VERSIONS = {
     "1.0": "76da59981a698e55488a901f63f20330311ca6766c9c1579d6634160deea61d2",
+    "1.1": "35ccc94beb465a96c746f758919f493b6dfadbdf4af4c4c8cc37d9f941cda466",
+    "1.2": "efaa13ccb3afc315355443c9a469f660124f5389db0901a0ada00491242b0a40",
 }
 
 
@@ -36,8 +37,16 @@ def test_skill_text_changes_come_with_a_new_version():
     )
 
 
+def test_only_the_current_versions_zip_is_checked_in():
+    version = METADATA_VERSION.search(SKILL_MD.read_text(encoding="utf-8")).group(1)
+    assert sorted(p.name for p in SKILLS_DIR.glob("telegram-digest*.zip")) == [
+        f"telegram-digest-skill-{version}.zip"
+    ], "rerun 'python3 .claude/skills/build_zip.py' after raising metadata.version"
+
+
 def test_skill_zip_matches_source():
-    with zipfile.ZipFile(ZIP_PATH) as zf:
+    version = METADATA_VERSION.search(SKILL_MD.read_text(encoding="utf-8")).group(1)
+    with zipfile.ZipFile(SKILLS_DIR / f"telegram-digest-skill-{version}.zip") as zf:
         assert zf.namelist() == ["telegram-digest/SKILL.md"]
         zipped = zf.read("telegram-digest/SKILL.md")
 
@@ -47,6 +56,6 @@ def test_skill_zip_matches_source():
     # working-tree SKILL.md to CRLF -- that's a checkout artifact, not a
     # real mismatch between the zip and its source.
     assert zipped.replace(b"\r\n", b"\n") == SKILL_MD.read_bytes().replace(b"\r\n", b"\n"), (
-        "telegram-digest.zip is stale -- rerun "
+        "the skill zip is stale -- rerun "
         "'python3 .claude/skills/build_zip.py' after editing SKILL.md"
     )

@@ -15,6 +15,8 @@ the user's phone, so intercepting the picture is not enough to sign in.
 """
 
 import asyncio
+import base64
+import html
 import io
 import os
 import shutil
@@ -25,12 +27,12 @@ from pathlib import Path
 from typing import Optional
 
 import qrcode
-from mcp.server.fastmcp import Image
 from qrcode.image.pure import PyPNGImage
 from telethon.errors import ApiIdInvalidError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 from telegram_mcp_ag import config as _config
+from telegram_mcp_ag import relogin as _relogin
 
 # How long a single tool call may block waiting for the scan. MCP hosts time
 # calls out on their own, so we return "still waiting" well before that and let
@@ -41,17 +43,22 @@ PASSWORD_PROMPT_TIMEOUT_SECONDS = 180.0
 _PROMPT_TITLE = "Telegram: облачный пароль"
 _PROMPT_TEXT = "Введите облачный пароль (2FA) вашего аккаунта Telegram"
 
-_BAD_CREDENTIALS_MESSAGE = (
-    "Telegram не принял api_id и api_hash. Проверьте их в настройках расширения: "
-    "они берутся на my.telegram.org/apps → API development tools, где api_id — "
-    "число, а api_hash — длинная строка рядом с ним. Чаще всего их путают местами "
-    "или копируют с лишним пробелом."
-)
+def _bad_credentials_message() -> str:
+    return (
+        "Telegram не принял api_id и api_hash, сохранённые при установке. Чтобы "
+        "ввести их заново, запустите установщик ещё раз -- он сам их спросит. "
+        "Ключи берутся на my.telegram.org/apps -> API development tools, где "
+        "api_id -- число, а api_hash -- длинная строка рядом с ним. Чаще всего их "
+        "путают местами или копируют с лишним пробелом. "
+        # Last, with nothing after it: a trailing period copied along with the
+        # command would turn --relogin into an unknown flag.
+        f"{_relogin.instructions()}"
+    )
 
 _state: dict = {
     "qr": None,
     "task": None,
-    "qr_path": None,
+    "page_path": None,
     "tmpdir": None,
     "activate": None,
 }
@@ -70,9 +77,8 @@ def set_activation_hook(callback) -> None:
 def render_qr_png(url: str) -> bytes:
     """Render ``url`` as a PNG QR code.
 
-    Uses qrcode's pure-Python PNG writer instead of the Pillow one: the bundle
-    is installed by uv on the user's machine, and Pillow is a large wheel to
-    pull in for one black-and-white image.
+    Uses qrcode's pure-Python PNG writer instead of the Pillow one: Pillow is
+    a large wheel to depend on for one black-and-white image.
     """
     buffer = io.BytesIO()
     qrcode.make(url, image_factory=PyPNGImage, box_size=8, border=4).save(buffer)
@@ -80,7 +86,7 @@ def render_qr_png(url: str) -> bytes:
 
 
 def _open_in_viewer(path: Path) -> bool:
-    """Open ``path`` with the OS image viewer. Returns whether it was launched.
+    """Open ``path`` with its default OS app. Returns whether it was launched.
 
     MCP hosts collapse tool-result images behind an expander or drop them
     altogether, so the picture in the chat cannot be the only channel. The
@@ -108,28 +114,112 @@ def _open_in_viewer(path: Path) -> bool:
         return False
 
 
-def _write_qr_file(png: bytes) -> tuple[Optional[Path], bool]:
-    """Write the QR to a private temp file and try to open it."""
+# A login token lives about half a minute, so a picture shown once goes stale
+# long before a user gets their phone out. The code is therefore shown on a
+# local page that reloads itself, and the server swaps a fresh code into it
+# whenever the old one expires (see _wait_with_fresh_codes).
+PAGE_RELOAD_SECONDS = 3
+# Fresh codes issued without the assistant's help: about five minutes' worth.
+QR_MAX_CODES = 10
+# How long the "done" page outlives the login, for the browser's next reload.
+_DONE_PAGE_SECONDS = 60.0
+
+_PAGE_STYLE = (
+    "body{font-family:-apple-system,system-ui,sans-serif;text-align:center;"
+    "margin:40px;color:#222}img{width:320px;height:320px;image-rendering:pixelated}"
+)
+
+
+def _qr_page(png: bytes, url: str) -> str:
+    # The image is inlined: a separate file would be cached by the browser and
+    # the reload would keep showing the old code.
+    image = base64.b64encode(png).decode("ascii")
+    link = html.escape(url, quote=True)
+    return (
+        '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
+        f'<meta http-equiv="refresh" content="{PAGE_RELOAD_SECONDS}">'
+        f"<title>Вход в Telegram</title><style>{_PAGE_STYLE}</style></head><body>"
+        "<h1>Вход в Telegram</h1>"
+        "<p>Отсканируйте код телефоном: Telegram → Настройки → Устройства → "
+        "Подключить устройство.</p>"
+        f'<img src="data:image/png;base64,{image}" alt="QR-код входа в Telegram">'
+        "<p>Код меняется каждые полминуты — эта страница сама показывает актуальный.</p>"
+        f'<p>Если Telegram установлен на этом компьютере: <a href="{link}">войти по ссылке</a>.</p>'
+        "</body></html>"
+    )
+
+
+_DONE_PAGE = (
+    '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
+    f"<title>Вход в Telegram</title><style>{_PAGE_STYLE}</style></head><body>"
+    "<h1>Вход выполнен</h1><p>Это окно можно закрыть.</p></body></html>"
+)
+
+
+def _write_page(content: str) -> Optional[Path]:
+    """Write the login page to a private temp dir. ``None`` if that failed."""
     try:
         tmpdir = _state["tmpdir"]
         if tmpdir is None:
             tmpdir = Path(tempfile.mkdtemp(prefix="telegram-mcp-ag-login-"))
             _state["tmpdir"] = tmpdir
-        path = tmpdir / "telegram-login-qr.png"
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(png)
-        _state["qr_path"] = path
-        return path, _open_in_viewer(path)
+        path = tmpdir / "telegram-login.html"
+        # Written aside and renamed into place: the browser reloads on its own
+        # schedule and must never catch a half-written page.
+        partial = tmpdir / "telegram-login.html.partial"
+        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(partial, path)
+        _state["page_path"] = path
+        return path
     except Exception:
-        return None, False
+        return None
 
 
-def _cleanup_qr_file() -> None:
-    tmpdir = _state.pop("tmpdir", None)
-    _state["qr_path"] = None
-    if tmpdir:
+def _show_qr_page(png: bytes, url: str, open_it: bool) -> tuple[Optional[Path], bool]:
+    """Put the current code on the page; open the page in the browser if asked.
+
+    Returns the page path (``None`` if it couldn't be written) and whether it
+    was opened. A refresh needs no opening: the page already on screen reloads.
+    """
+    path = _write_page(_qr_page(png, url))
+    if path is None or not open_it:
+        return path, False
+    return path, _open_in_viewer(path)
+
+
+def _finish_qr_page() -> None:
+    """Replace the code with a "done" page, then remove it a little later."""
+    tmpdir = _state["tmpdir"]
+    if tmpdir is None:
+        return
+    _write_page(_DONE_PAGE)
+    _state["tmpdir"] = None
+    _state["page_path"] = None
+    try:
+        asyncio.get_running_loop().call_later(
+            _DONE_PAGE_SECONDS, shutil.rmtree, tmpdir, True
+        )
+    except RuntimeError:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def _wait_with_fresh_codes(qr):
+    """Wait for the scan, replacing each expired code with a fresh one.
+
+    Raises ``asyncio.TimeoutError`` once ``QR_MAX_CODES`` codes have expired
+    unscanned; the next ``telegram_login_check`` then starts over.
+    """
+    for attempt in range(QR_MAX_CODES):
+        try:
+            # Without a timeout Telethon waits exactly until this code expires.
+            return await qr.wait()
+        except asyncio.TimeoutError:
+            if attempt == QR_MAX_CODES - 1:
+                raise
+            await qr.recreate()
+            _show_qr_page(render_qr_png(qr.url), qr.url, open_it=False)
 
 
 # ---------------------------------------------------------------------------
@@ -141,8 +231,8 @@ def _password_prompt_command() -> Optional[list]:
     """Build a command that asks for a password in a native OS dialog.
 
     The password is the account's master credential, so it must not travel
-    through the conversation, and it is needed exactly once — storing it in the
-    bundle's config just to replay it later would be worse than the session
+    through the conversation, and it is needed exactly once — storing it in
+    config.env just to replay it later would be worse than the session
     string it unlocks. A local dialog keeps it off the wire and out of any file.
     """
     if sys.platform == "darwin":
@@ -207,8 +297,8 @@ async def _persist_session(client) -> str:
     session_string = StringSession.save(client.session)
 
     values = {"TELEGRAM_SESSION_STRING": session_string}
-    # The bundle passes credentials through the form, so config.env may not
-    # exist yet. Writing all three keeps every client working off one file,
+    # The credentials may have come from the environment rather than
+    # config.env. Writing all three keeps every client working off one file,
     # which is where this project keeps secrets.
     for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
         value = os.environ.get(key, "").strip()
@@ -217,7 +307,7 @@ async def _persist_session(client) -> str:
     _config.write_values(values)
 
     os.environ["TELEGRAM_SESSION_STRING"] = session_string
-    _cleanup_qr_file()
+    _finish_qr_page()
 
     activate = _state.get("activate")
     if activate is None:
@@ -231,10 +321,9 @@ async def _persist_session(client) -> str:
 
 def _success_message(user, activation: str) -> str:
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or "аккаунт"
-    lines = [
-        f"Вход выполнен: {name}.",
-        f"Сессия сохранена в {_config.CONFIG_PATH} (доступ только владельцу файла).",
-    ]
+    # Where the session is stored is left out on purpose: the reader is the
+    # assistant, and it has no business going after the file.
+    lines = [f"Вход выполнен: {name}."]
     # activation == "activated" only means the tools/list_changed notification
     # was sent without the write itself raising -- it says nothing about
     # whether this particular MCP client actually re-fetches the tool list
@@ -249,15 +338,11 @@ def _success_message(user, activation: str) -> str:
             "уже доступны в этом разговоре — можно сразу просить сводку по "
             "чатам. Если инструменты всё же не находятся (ассистент не видит "
             "их в списке доступных), это ограничение конкретного MCP-клиента, "
-            "а не проблема входа: выключите и снова включите расширение "
-            "Telegram в настройках (или перезапустите приложение целиком) и "
-            "начните новый разговор -- это нужно сделать один раз."
+            f"а не проблема входа: {_relogin.RESTART_CLIENT} -- это нужно сделать один раз."
         )
     else:
         lines.append(
-            "Чтобы инструменты чтения появились, выключите и снова включите "
-            "расширение Telegram в настройках (или перезапустите приложение) "
-            "и начните новый разговор. Это нужно один раз."
+            f"Чтобы инструменты чтения появились, {_relogin.RESTART_CLIENT}. Это нужно один раз."
         )
     lines.append(
         "Если при первом вызове инструмента появится запрос подтверждения — "
@@ -275,22 +360,25 @@ def register(mcp, ToolAnnotations, get_client) -> list:
     """Register the login tools and return their names."""
 
     async def _refresh_qr() -> list:
-        """Issue a new login token after the previous one expired."""
+        """Start over once every code the server issued on its own expired."""
         qr = _state["qr"]
         await qr.recreate()
-        _state["task"] = asyncio.create_task(qr.wait(timeout=None))
+        _state["task"] = asyncio.create_task(_wait_with_fresh_codes(qr))
 
         png = render_qr_png(qr.url)
-        _, opened = _write_qr_file(png)
+        # Opened again: after this long the user may have closed the window.
+        path, opened = _show_qr_page(png, qr.url, open_it=True)
 
-        note = "Прежний QR-код устарел, вот новый — отсканируйте его."
+        note = "Прежние QR-коды устарели, сервер выдал новый."
         if opened:
-            note += " Он открыт в окне на этом компьютере."
+            note += " Он открыт в окне браузера на этом компьютере и там сам обновляется."
+        elif path is not None:
+            note += f" Он на странице {path} — откройте её в браузере, она сама обновляется."
         note += (
             "\nПосле сканирования вызовите telegram_login_check ещё раз."
             f"\nЗапасная ссылка: {qr.url}"
         )
-        return [note, Image(data=png, format="png")]
+        return [note]
 
     async def _finish_with_password(client) -> list:
         """Complete a login on an account protected by a cloud password."""
@@ -332,6 +420,9 @@ def register(mcp, ToolAnnotations, get_client) -> list:
         Link Desktop Device, and scan the code. After that call
         ``telegram_login_check`` to finish the login; it may need calling more
         than once while the user is scanning.
+
+        Never ask the user to show or paste anything from config.env, not even
+        key names: it holds the session, which is full access to the account.
         """
         try:
             client = get_client(None)
@@ -346,19 +437,25 @@ def register(mcp, ToolAnnotations, get_client) -> list:
 
             qr = await client.qr_login()
             _state["qr"] = qr
-            _state["task"] = asyncio.create_task(qr.wait(timeout=None))
+            _state["task"] = asyncio.create_task(_wait_with_fresh_codes(qr))
 
             png = render_qr_png(qr.url)
-            path, opened = _write_qr_file(png)
+            path, opened = _show_qr_page(png, qr.url, open_it=True)
 
             instructions = [
                 "Чтобы подключить Telegram, отсканируйте QR-код телефоном:",
                 "Telegram → Настройки → Устройства → Подключить устройство.",
             ]
             if opened:
-                instructions.append("Код открыт в отдельном окне на этом компьютере.")
+                instructions.append(
+                    "Код открыт в окне браузера на этом компьютере: код меняется "
+                    "каждые полминуты, и окно само показывает актуальный."
+                )
             elif path is not None:
-                instructions.append(f"Код также сохранён в файл: {path}")
+                instructions.append(
+                    f"Код на странице {path} — откройте её в браузере, она сама "
+                    "показывает актуальный."
+                )
             instructions.append(
                 "Если код не видно, откройте эту ссылку на компьютере, где уже "
                 f"установлен Telegram: {qr.url}"
@@ -367,9 +464,11 @@ def register(mcp, ToolAnnotations, get_client) -> list:
                 "После сканирования вызовите telegram_login_check, чтобы завершить вход."
             )
 
-            return ["\n".join(instructions), Image(data=png, format="png")]
+            # No picture in the chat: a code there is dead within half a
+            # minute, and a stale one is just a scan that fails.
+            return ["\n".join(instructions)]
         except ApiIdInvalidError:
-            return [_BAD_CREDENTIALS_MESSAGE]
+            return [_bad_credentials_message()]
         except Exception as exc:
             return [f"Не удалось начать вход в Telegram: {exc}"]
 
@@ -403,10 +502,10 @@ def register(mcp, ToolAnnotations, get_client) -> list:
                     asyncio.shield(task), timeout=WAIT_TIMEOUT_SECONDS
                 )
             except asyncio.TimeoutError:
-                # Telethon raises TimeoutError too, when the login token itself
-                # expires. Only the task finishing tells the two apart: ours
-                # means the user is still scanning, Telethon's means the code on
-                # screen is dead and has to be replaced.
+                # The task raises TimeoutError too, once every code it issued
+                # expired unscanned. Only the task finishing tells the two
+                # apart: ours means the user is still scanning, the task's
+                # means it gave up and the login has to start over.
                 if task.done():
                     return await _refresh_qr()
                 return [

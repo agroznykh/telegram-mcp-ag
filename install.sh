@@ -38,18 +38,16 @@ UPSTREAM_SOURCE=""
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
-# Filled in by prompt_api_credentials()/run_telegram_login() before
-# run_telegram_login()/write_config_env() read them. Pre-declared (empty)
-# so `set -u` doesn't complain if that ever changes.
+# Filled in by prompt_api_credentials() before write_config_env() reads
+# them. Pre-declared (empty) so `set -u` doesn't complain if that ever changes.
 API_ID=""
 API_HASH=""
-SESSION_VAR=""
-SESSION_STRING=""
 OS=""
 ARCH=""
 
-# Set by prompt_auto_approve(), read by register_claude_code()/register_codex().
-AUTO_APPROVE_TOOLS=0
+# Read by register_claude_code()/register_codex(). Always on, without asking:
+# the server is read-only, so a confirmation on every call protects nothing.
+AUTO_APPROVE_TOOLS=1
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -298,65 +296,50 @@ prompt_api_credentials() {
     done
 }
 
-prompt_auto_approve() {
-    echo
-    info "Сервер умеет только читать Telegram -- отправка сообщений и другие"
-    info "изменяющие действия физически недоступны, независимо от ответа ниже."
-    if confirm "Разрешать инструменты чтения автоматически, без подтверждения в чате на каждый вызов?"; then
-        AUTO_APPROVE_TOOLS=1
-    else
-        AUTO_APPROVE_TOOLS=0
-        info "Ассистент будет спрашивать подтверждение на каждый вызов -- это можно изменить позже в настройках клиента."
-    fi
-}
-
 run_telegram_login() {
     echo
     info "Вход в Telegram: сейчас появится QR-код."
     info "В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код."
-    warn "На вопрос генератора сессии \"Would you like to automatically update your .env file? (y/N)\" в конце ответьте n -- этот установщик сам запишет config.env."
     echo
 
-    local log_file=""
-    log_file="$(mktemp)"
-    local login_ok=0
-
-    PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-        "$VENV_DIR/bin/telegram-mcp-generate-session" --qr <"/dev/tty" | tee "$log_file" || login_ok=1
-
-    if [[ "$login_ok" -ne 0 ]]; then
-        warn "Вход по QR-коду не удался, пробую вход по номеру телефона."
-        : >"$log_file"
-        login_ok=0
+    # The login command merges the session into config.env, and falls back to
+    # a phone-number login on its own if the QR code is never scanned. It
+    # prints the session nowhere. Exit code 3: Telegram rejected api_id/api_hash.
+    local status=0
+    while true; do
+        status=0
         PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-            "$VENV_DIR/bin/telegram-mcp-generate-session" --phone <"/dev/tty" | tee "$log_file" || login_ok=1
-    fi
-
-    # A stray plaintext .env may appear here if the login script's own
-    # "update .env?" prompt was answered y. We already parse the session
-    # string from the transcript above, so this file is redundant and, at
-    # default permissions, not protected the way config.env is -- remove it.
-    rm -f "$INSTALL_DIR/.env"
-
-    if [[ "$login_ok" -ne 0 ]]; then
-        rm -f "$log_file"
-        error "Не удалось войти в Telegram. Проверьте api_id/api_hash и запустите: bash install.sh --relogin"
+            "$VENV_DIR/bin/telegram-mcp-ag-login" <"/dev/tty" || status=$?
+        if [[ "$status" -eq 0 ]]; then
+            return 0
+        fi
+        if [[ "$status" -eq 3 ]]; then
+            prompt_api_credentials
+            write_config_env
+            continue
+        fi
+        error "Не удалось войти в Telegram. Запустите вход ещё раз: bash install.sh --relogin"
         exit 1
-    fi
+    done
+}
 
-    # The generator names the variable TELEGRAM_SESSION_STRING by default,
-    # or TELEGRAM_SESSION_STRING_<LABEL> if a label was typed at its prompt.
-    local session_line=""
-    session_line="$(grep -m1 -E '^TELEGRAM_SESSION_STRING(_[A-Za-z0-9_]+)?=' "$log_file" || true)"
-    rm -f "$log_file"
-
-    if [[ -z "$session_line" ]]; then
-        error "Не удалось получить строку сессии из вывода входа."
-        exit 1
-    fi
-
-    SESSION_VAR="${session_line%%=*}"
-    SESSION_STRING="${session_line#*=}"
+# api_id/api_hash don't change on a relogin -- they belong to the app on
+# my.telegram.org, not to the session -- so a config.env that already has
+# them (a relogin, or a session the server cleared after Telegram revoked
+# it) is reused without asking again.
+load_api_credentials() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    local id="" hash=""
+    id="$(grep -m1 -E '^TELEGRAM_API_ID=' "$f" | cut -d= -f2- || true)"
+    hash="$(grep -m1 -E '^TELEGRAM_API_HASH=' "$f" | cut -d= -f2- || true)"
+    id="${id%\"}"
+    id="${id#\"}"
+    hash="${hash%\"}"
+    hash="${hash#\"}"
+    [[ -n "$id" && -n "$hash" ]] || return 1
+    API_ID="$id"
+    API_HASH="$hash"
 }
 
 has_full_config() {
@@ -381,13 +364,12 @@ write_config_env() {
         {
             printf 'TELEGRAM_API_ID=%s\n' "$API_ID"
             printf 'TELEGRAM_API_HASH=%s\n' "$API_HASH"
-            printf '%s=%s\n' "$SESSION_VAR" "$SESSION_STRING"
             printf 'TELEGRAM_EXPOSED_TOOLS=read-only\n'
             printf 'TELEGRAM_DEVICE_MODEL=%s\n' "$device_model"
         } >"$CONFIG_PATH"
     )
     chmod 600 "$CONFIG_PATH"
-    ok "config.env записан ($CONFIG_PATH, права 600)."
+    ok "api_id и api_hash сохранены."
 }
 
 # ---------------------------------------------------------------------------
@@ -669,30 +651,34 @@ _install_claude_skill() {
 }
 
 # claude.ai's "Upload a skill" dialog wants a zip with a top-level
-# telegram-digest/ folder, not a bare SKILL.md -- this is the exact same
-# file the README links to for readers who add the skill by hand, so both
-# routes end up with byte-identical output, and the user never has to
-# archive anything themselves.
+# telegram-digest/ folder, not a bare SKILL.md -- the repo carries it ready
+# built, named telegram-digest-skill-<version>.zip, so the user never has to
+# archive anything themselves. It goes straight to Downloads, under the same
+# name: that's where README tells users to look for it, since it's a folder
+# every non-developer already knows how to find. The version in the name
+# tells uploads of different skill versions apart.
 _install_claude_skill_zip() {
-    if curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest.zip" \
-        -o "$INSTALL_DIR/telegram-digest-skill.zip" 2>/dev/null; then
-        # Also copy to Downloads -- that's where README tells users to look for
-        # it, since it's a folder every non-developer already knows how to find
-        # (unlike $INSTALL_DIR). mkdir -p/cp -f so an existing file from a
-        # previous run is silently replaced, never an error.
-        mkdir -p "$HOME/Downloads" 2>/dev/null
-        # The version in the name tells uploads of different skill versions
-        # apart. Releases from before skills had a version get the plain name.
-        local version="" downloads_name="telegram-digest-skill.zip"
-        version="$(curl -fsSL "https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills/telegram-digest/SKILL.md" 2>/dev/null |
-            sed -nE 's/^[[:space:]]+version: "([0-9]+\.[0-9]+)"[[:space:]]*$/\1/p' | head -1)" || true
-        [[ -n "$version" ]] && downloads_name="telegram-digest-skill-$version.zip"
-        cp -f "$INSTALL_DIR/telegram-digest-skill.zip" "$HOME/Downloads/$downloads_name" 2>/dev/null || true
-        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $HOME/Downloads/$downloads_name"
+    local base="https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/$REPO_REF/.claude/skills"
+    local version="" name="telegram-digest-skill.zip"
+    version="$(curl -fsSL "$base/telegram-digest/SKILL.md" 2>/dev/null |
+        sed -nE 's/^[[:space:]]+version: "([0-9]+\.[0-9]+)"[[:space:]]*$/\1/p' | head -1)" || true
+    [[ -n "$version" ]] && name="telegram-digest-skill-$version.zip"
+
+    mkdir -p "$HOME/Downloads" 2>/dev/null
+    local dest="$HOME/Downloads/$name"
+    # Releases from before the zip carried its version in the repo have it
+    # as telegram-digest.zip; the fallback can go once every release has the
+    # new name.
+    if curl -fsSL "$base/$name" -o "$dest" 2>/dev/null ||
+        curl -fsSL "$base/telegram-digest.zip" -o "$dest" 2>/dev/null; then
+        ok "Готовый архив скилла для Claude Desktop (в Загрузках): $dest"
+        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл $name из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     else
+        rm -f "$dest"
         warn "Не удалось скачать архив скилла для Claude Desktop -- не критично, остальное работает и без него."
-        rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
     fi
+    # Earlier installers kept a copy here too; nothing reads it.
+    rm -f "$INSTALL_DIR/telegram-digest-skill.zip"
 }
 
 install_claude_skills() {
@@ -710,7 +696,6 @@ install_claude_skills() {
     if [[ "$have_desktop" -eq 1 ]]; then
         ( set +eu; _install_claude_skill_zip ) \
             || warn "Не удалось подготовить архив скилла -- не критично, остальное работает и без него."
-        info "В обычном чате Claude Desktop скиллы читаются не с диска, а из вашего аккаунта claude.ai: чтобы сводка работала и там, подключите файл telegram-digest-skill.zip из Загрузок через значок профиля -> Settings -> Customize -> Skills -> Add -> Upload a skill (подробности в README)."
     fi
 }
 
@@ -760,7 +745,7 @@ PYEOF
     else
         warn "Самопроверка не прошла:"
         echo "$output" >&2
-        warn "config.env записан, но сервер пока не отвечает как ожидалось. Запустите вручную: $VENV_DIR/bin/telegram-mcp-ag"
+        warn "Настройки сохранены, но сервер пока не отвечает как ожидалось. Запустите вручную: $VENV_DIR/bin/telegram-mcp-ag"
     fi
 }
 
@@ -774,7 +759,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
 ' 2>/dev/null || true)"
 
     echo
-    ok "Готово! telegram-mcp-ag установлен в $INSTALL_DIR"
+    ok "Готово! telegram-mcp-ag установлен."
     echo
     echo "Что дальше:"
     echo "  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты."
@@ -784,8 +769,6 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     fi
     echo "  - Повторный вход в Telegram (например, после отзыва сессии): bash install.sh --relogin"
     echo "  - Полное удаление: bash install.sh --uninstall"
-    echo
-    echo "Секреты лежат в $CONFIG_PATH (права 600). Никому их не показывайте и не публикуйте."
 }
 
 # ---------------------------------------------------------------------------
@@ -950,15 +933,18 @@ main() {
     _confirm_new_venv
 
     if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
-        info "Найден существующий $CONFIG_PATH -- использую его без повторного входа."
+        info "Вход в Telegram уже выполнен -- использую сохранённую сессию."
         info "Чтобы войти заново (например, после отзыва сессии), запустите: bash install.sh --relogin"
     else
-        prompt_api_credentials
+        if load_api_credentials "$CONFIG_PATH"; then
+            info "Использую сохранённые api_id и api_hash."
+        else
+            prompt_api_credentials
+            write_config_env
+        fi
         run_telegram_login
-        write_config_env
     fi
 
-    prompt_auto_approve
     register_claude_code
     register_codex
     register_claude_desktop

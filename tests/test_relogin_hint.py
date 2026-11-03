@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 from telethon.crypto import AuthKey
 from telethon.errors.rpcerrorlist import (
+    AuthKeyDuplicatedError,
     AuthKeyInvalidError,
     AuthKeyUnregisteredError,
     SessionRevokedError,
@@ -22,7 +23,7 @@ os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "test-hash")
 os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 
-from telegram_mcp_ag import server
+from telegram_mcp_ag import relogin, server
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +40,10 @@ def _rpc_error(cls):
     return cls(request=SimpleNamespace())
 
 
-@pytest.mark.parametrize("error_cls", [AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError])
+@pytest.mark.parametrize(
+    "error_cls",
+    [AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError, AuthKeyDuplicatedError],
+)
 def test_relogin_user_message_covers_all_session_error_types(error_cls):
     message = server._relogin_user_message(_rpc_error(error_cls))
     assert message is not None
@@ -47,6 +51,44 @@ def test_relogin_user_message_covers_all_session_error_types(error_cls):
     # Leads with the terminal-free path: no client can restart the extension
     # for the user, so this must be the words a human reads and acts on.
     assert "QR" in message
+
+
+class _ScriptedClient:
+    """Stands in for TelegramClient in the startup session check."""
+
+    outcome = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def connect(self):
+        return None
+
+    async def disconnect(self):
+        return None
+
+    async def __call__(self, request):
+        if _ScriptedClient.outcome is not None:
+            raise _ScriptedClient.outcome
+        return object()
+
+
+@pytest.mark.parametrize(
+    "outcome,dead",
+    [
+        (_rpc_error(AuthKeyUnregisteredError), True),
+        (_rpc_error(AuthKeyDuplicatedError), True),
+        # No network or any other failure must not cost a working session.
+        (ConnectionError("offline"), False),
+        (None, False),
+    ],
+)
+def test_startup_session_check_trusts_only_a_definite_answer(monkeypatch, outcome, dead):
+    import telethon
+
+    monkeypatch.setattr(telethon, "TelegramClient", _ScriptedClient)
+    monkeypatch.setattr(_ScriptedClient, "outcome", outcome)
+    assert server._saved_session_is_dead() is dead
 
 
 def test_relogin_user_message_ignores_unrelated_errors():
@@ -76,16 +118,16 @@ def test_relogin_user_message_clears_the_dead_session_on_disk():
     ],
 )
 def test_relogin_instructions_pick_the_right_command_for_a_known_os(monkeypatch, system_name, expected_snippet):
-    monkeypatch.setattr(server.platform, "system", lambda: system_name)
-    instructions = server._relogin_instructions()
+    monkeypatch.setattr(relogin.platform, "system", lambda: system_name)
+    instructions = relogin.instructions()
     assert expected_snippet in instructions
     other_snippet = "-Relogin" if expected_snippet == "--relogin" else "--relogin"
     assert other_snippet not in instructions
 
 
 def test_relogin_instructions_lists_both_commands_for_an_unknown_os(monkeypatch):
-    monkeypatch.setattr(server.platform, "system", lambda: "FreeBSD")
-    instructions = server._relogin_instructions()
+    monkeypatch.setattr(relogin.platform, "system", lambda: "FreeBSD")
+    instructions = relogin.instructions()
     assert "--relogin" in instructions
     assert "-Relogin" in instructions
 

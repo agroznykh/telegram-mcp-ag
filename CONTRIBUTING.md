@@ -20,17 +20,18 @@ git config core.hooksPath .githooks
 
 ## Скилл `telegram-digest` для Claude Desktop
 
-`.claude/skills/telegram-digest.zip` — закоммиченный (не игнорируемый)
-готовый архив: то, что claude.ai ждёт в диалоге «Upload a skill» (папка
-`telegram-digest/` с `SKILL.md` внутри), собранное заранее, чтобы ни
-установщикам, ни README не нужно было архивировать что-либо на лету или
-полагаться на `zip`/`Compress-Archive`, которых может не быть на машине
-пользователя. `install.sh`/`install.ps1` и прямая ссылка в README отдают
-именно этот файл через `raw.githubusercontent.com` — оба пути получают
-байт-в-байт одно и то же.
+`.claude/skills/telegram-digest-skill-<версия>.zip` — закоммиченный (не
+игнорируемый) готовый архив: то, что claude.ai ждёт в диалоге «Upload a skill»
+(папка `telegram-digest/` с `SKILL.md` внутри), собранное заранее, чтобы
+установщикам не нужно было архивировать что-либо на лету или полагаться на
+`zip`/`Compress-Archive`, которых может не быть на машине пользователя.
+`install.sh`/`install.ps1` скачивают его через `raw.githubusercontent.com`
+прямо в Загрузки под тем же именем. Версия в имени — `metadata.version` из
+`SKILL.md`.
 
 После правки `.claude/skills/telegram-digest/SKILL.md` поднимите в нём
-`metadata.version` и пересоберите архив:
+`metadata.version` и пересоберите архив — скрипт назовёт его по новой версии
+и удалит архив прежней:
 
 ```bash
 python3 .claude/skills/build_zip.py
