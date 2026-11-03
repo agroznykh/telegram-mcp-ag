@@ -200,7 +200,7 @@ async def _login(api_id: int, api_hash: str, use_qr: bool) -> str:
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
         prog="telegram-mcp-ag-login",
-        description="Вход в Telegram для telegram-mcp-ag: сессия сохраняется в config.env.",
+        description="Вход в Telegram для telegram-mcp-ag.",
     )
     parser.add_argument(
         "--phone",
@@ -217,8 +217,12 @@ def main(argv=None) -> None:
         _config.load(_config.CONFIG_PATH)
     except _config.MissingSessionError:
         pass
-    except _config.ConfigError as exc:
-        print(f"Не найдены api_id/api_hash: {exc}", file=sys.stderr)
+    except _config.ConfigError:
+        # Not the error text itself: it names the config file's location.
+        print(
+            "Не найдены api_id/api_hash. Запустите установщик ещё раз -- он их спросит.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     api_id = int(os.environ["TELEGRAM_API_ID"].strip())
@@ -251,7 +255,7 @@ def main(argv=None) -> None:
         },
         _config.CONFIG_PATH,
     )
-    print(f"\nВход выполнен. Сессия сохранена в {_config.CONFIG_PATH}.")
+    print("\nВход выполнен.")
 
 
 if __name__ == "__main__":

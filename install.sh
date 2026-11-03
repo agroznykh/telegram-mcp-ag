@@ -369,7 +369,7 @@ write_config_env() {
         } >"$CONFIG_PATH"
     )
     chmod 600 "$CONFIG_PATH"
-    ok "config.env записан ($CONFIG_PATH, права 600)."
+    ok "api_id и api_hash сохранены."
 }
 
 # ---------------------------------------------------------------------------
@@ -745,7 +745,7 @@ PYEOF
     else
         warn "Самопроверка не прошла:"
         echo "$output" >&2
-        warn "config.env записан, но сервер пока не отвечает как ожидалось. Запустите вручную: $VENV_DIR/bin/telegram-mcp-ag"
+        warn "Настройки сохранены, но сервер пока не отвечает как ожидалось. Запустите вручную: $VENV_DIR/bin/telegram-mcp-ag"
     fi
 }
 
@@ -759,7 +759,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
 ' 2>/dev/null || true)"
 
     echo
-    ok "Готово! telegram-mcp-ag установлен в $INSTALL_DIR"
+    ok "Готово! telegram-mcp-ag установлен."
     echo
     echo "Что дальше:"
     echo "  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты."
@@ -769,8 +769,6 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     fi
     echo "  - Повторный вход в Telegram (например, после отзыва сессии): bash install.sh --relogin"
     echo "  - Полное удаление: bash install.sh --uninstall"
-    echo
-    echo "Секреты лежат в $CONFIG_PATH (права 600). Никому их не показывайте и не публикуйте."
 }
 
 # ---------------------------------------------------------------------------
@@ -935,11 +933,11 @@ main() {
     _confirm_new_venv
 
     if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
-        info "Найден существующий $CONFIG_PATH -- использую его без повторного входа."
+        info "Вход в Telegram уже выполнен -- использую сохранённую сессию."
         info "Чтобы войти заново (например, после отзыва сессии), запустите: bash install.sh --relogin"
     else
         if load_api_credentials "$CONFIG_PATH"; then
-            info "Использую api_id и api_hash из $CONFIG_PATH."
+            info "Использую сохранённые api_id и api_hash."
         else
             prompt_api_credentials
             write_config_env

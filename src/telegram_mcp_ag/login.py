@@ -321,10 +321,9 @@ async def _persist_session(client) -> str:
 
 def _success_message(user, activation: str) -> str:
     name = getattr(user, "first_name", None) or getattr(user, "username", None) or "аккаунт"
-    lines = [
-        f"Вход выполнен: {name}.",
-        f"Сессия сохранена в {_config.CONFIG_PATH} (доступ только владельцу файла).",
-    ]
+    # Where the session is stored is left out on purpose: the reader is the
+    # assistant, and it has no business going after the file.
+    lines = [f"Вход выполнен: {name}."]
     # activation == "activated" only means the tools/list_changed notification
     # was sent without the write itself raising -- it says nothing about
     # whether this particular MCP client actually re-fetches the tool list

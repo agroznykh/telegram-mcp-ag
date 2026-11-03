@@ -459,7 +459,7 @@ function Write-ConfigEnv {
     [System.IO.File]::WriteAllText($ConfigPath, $content, $utf8NoBom)
 
     Protect-ConfigFile -Path $ConfigPath
-    Write-Ok "config.env записан ($ConfigPath, доступ только для вашей учётной записи)."
+    Write-Ok 'api_id и api_hash сохранены.'
 }
 
 # ---------------------------------------------------------------------------
@@ -891,7 +891,7 @@ function Invoke-SelfCheck {
     } else {
         Write-Warn 'Самопроверка не прошла:'
         Write-Host $outputText
-        Write-Warn "config.env записан, но сервер пока не отвечает как ожидалось. Запустите вручную: $(Get-VenvServerExe)"
+        Write-Warn "Настройки сохранены, но сервер пока не отвечает как ожидалось. Запустите вручную: $(Get-VenvServerExe)"
     }
 }
 
@@ -911,7 +911,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     }
 
     Write-Host ''
-    Write-Ok "Готово! telegram-mcp-ag установлен в $InstallDir"
+    Write-Ok 'Готово! telegram-mcp-ag установлен.'
     Write-Host ''
     Write-Host 'Что дальше:'
     Write-Host '  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты.'
@@ -921,8 +921,6 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     }
     Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии): .\install.ps1 -Relogin'
     Write-Host '  - Полное удаление: .\install.ps1 -Uninstall'
-    Write-Host ''
-    Write-Host "Секреты лежат в $ConfigPath (доступ только для вашей учётной записи). Никому их не показывайте и не публикуйте."
 }
 
 # ---------------------------------------------------------------------------
@@ -1031,12 +1029,12 @@ function Invoke-Main {
     Confirm-NewVenv
 
     if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
-        Write-Info "Найден существующий $ConfigPath -- использую его без повторного входа."
+        Write-Info 'Вход в Telegram уже выполнен -- использую сохранённую сессию.'
         Write-Info 'Чтобы войти заново (например, после отзыва сессии), запустите: .\install.ps1 -Relogin'
     } else {
         $creds = Read-ConfigCredentials -Path $ConfigPath
         if ($creds) {
-            Write-Info "Использую api_id и api_hash из $ConfigPath."
+            Write-Info 'Использую сохранённые api_id и api_hash.'
         } else {
             $creds = Read-ApiCredentials
             Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
