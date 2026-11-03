@@ -136,7 +136,6 @@ def test_render_qr_png_produces_a_png():
 
 
 def test_qr_page_is_owner_only_reloads_itself_and_is_removed(monkeypatch):
-    monkeypatch.setattr(login, "OPEN_IN_SYSTEM_BROWSER", True)
     opened_paths = []
     monkeypatch.setattr(login, "_open_in_viewer", lambda path: opened_paths.append(path) or True)
     url = "tg://login?token=abc"
@@ -156,7 +155,6 @@ def test_qr_page_is_owner_only_reloads_itself_and_is_removed(monkeypatch):
 
 
 def test_refreshing_the_page_does_not_open_another_window(monkeypatch):
-    monkeypatch.setattr(login, "OPEN_IN_SYSTEM_BROWSER", True)
     opened_paths = []
     monkeypatch.setattr(login, "_open_in_viewer", lambda path: opened_paths.append(path) or True)
     try:
@@ -182,20 +180,6 @@ async def test_start_returns_instructions_and_an_image(registered):
     assert "Устройства" in text
     assert "tg://login?token=" in text
     assert image.to_image_content().mimeType == "image/png"
-
-
-@pytest.mark.asyncio
-async def test_start_links_the_page_and_leaves_opening_it_to_the_user(registered, monkeypatch):
-    tools, _client, _config_path = registered
-    opened_paths = []
-    monkeypatch.setattr(login, "_open_in_viewer", lambda path: opened_paths.append(path) or True)
-
-    text, _image = await tools["telegram_login_start"]()
-
-    page = login._state["page_path"]
-    assert page.as_uri() in text
-    assert str(page) in text
-    assert opened_paths == []
 
 
 @pytest.mark.asyncio

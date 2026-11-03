@@ -122,11 +122,6 @@ def _open_in_viewer(path: Path) -> bool:
 PAGE_RELOAD_SECONDS = 3
 # Fresh codes issued without the assistant's help: about five minutes' worth.
 QR_MAX_CODES = 10
-# Off for now: Claude Desktop and ChatGPT Desktop have built-in browsers, and a
-# link to the page in the tool result may open there on a click, which the
-# system browser can't. Whether it does is being tried out; the system browser
-# stays available as the fallback.
-OPEN_IN_SYSTEM_BROWSER = False
 # How long the "done" page outlives the login, for the browser's next reload.
 _DONE_PAGE_SECONDS = 60.0
 
@@ -190,30 +185,9 @@ def _show_qr_page(png: bytes, url: str, open_it: bool) -> tuple[Optional[Path], 
     was opened. A refresh needs no opening: the page already on screen reloads.
     """
     path = _write_page(_qr_page(png, url))
-    if path is None or not open_it or not OPEN_IN_SYSTEM_BROWSER:
+    if path is None or not open_it:
         return path, False
     return path, _open_in_viewer(path)
-
-
-def _page_link_note(path: Path, opened: bool) -> str:
-    """The lines that send the user to the page with the always-current code.
-
-    Both the plain path and a file:// link: Claude Desktop opens an HTML path
-    clicked in the chat in its built-in browser, other clients render links.
-    """
-    lines = []
-    if opened:
-        lines.append("Страница с кодом уже открыта в браузере на этом компьютере.")
-    lines.append(
-        "Покажите пользователю эту ссылку и попросите кликнуть по ней, чтобы открыть "
-        f"QR-код: {path.as_uri()}"
-    )
-    lines.append(f"Путь к странице: {path}")
-    lines.append(
-        "Сканировать лучше со страницы: код меняется каждые полминуты, страница сама "
-        "показывает актуальный, а картинка в чате быстро устаревает."
-    )
-    return "\n".join(lines)
 
 
 def _finish_qr_page() -> None:
@@ -395,11 +369,11 @@ def register(mcp, ToolAnnotations, get_client) -> list:
 
         png = render_qr_png(qr.url)
         # Opened again: after this long the user may have closed the window.
-        path, opened = _show_qr_page(png, qr.url, open_it=True)
+        _, opened = _show_qr_page(png, qr.url, open_it=True)
 
         note = "Прежние QR-коды устарели, вот новый — отсканируйте его."
-        if path is not None:
-            note += "\n" + _page_link_note(path, opened)
+        if opened:
+            note += " Он открыт в окне браузера на этом компьютере и там сам обновляется."
         note += (
             "\nПосле сканирования вызовите telegram_login_check ещё раз."
             f"\nЗапасная ссылка: {qr.url}"
@@ -469,8 +443,17 @@ def register(mcp, ToolAnnotations, get_client) -> list:
                 "Чтобы подключить Telegram, отсканируйте QR-код телефоном:",
                 "Telegram → Настройки → Устройства → Подключить устройство.",
             ]
-            if path is not None:
-                instructions.append(_page_link_note(path, opened))
+            if opened:
+                instructions.append(
+                    "Код открыт в окне браузера на этом компьютере. Сканируйте его "
+                    "оттуда: код меняется каждые полминуты, и окно само показывает "
+                    "актуальный, а картинка в чате быстро устаревает."
+                )
+            elif path is not None:
+                instructions.append(
+                    f"Актуальный код всегда на странице {path} — откройте её в "
+                    "браузере, она сама обновляется. Картинка в чате быстро устаревает."
+                )
             instructions.append(
                 "Если код не видно, откройте эту ссылку на компьютере, где уже "
                 f"установлен Telegram: {qr.url}"
