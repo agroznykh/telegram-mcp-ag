@@ -172,14 +172,14 @@ def test_refreshing_the_page_does_not_open_another_window(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_start_returns_instructions_and_an_image(registered):
+async def test_start_returns_instructions_and_no_picture(registered):
     tools, _client, _config_path = registered
 
-    text, image = await tools["telegram_login_start"]()
+    # Text only: a QR picture in the chat goes stale within half a minute.
+    (text,) = await tools["telegram_login_start"]()
 
     assert "Устройства" in text
     assert "tg://login?token=" in text
-    assert image.to_image_content().mimeType == "image/png"
 
 
 @pytest.mark.asyncio
@@ -244,11 +244,11 @@ async def test_login_starts_over_once_every_code_expired(registered, monkeypatch
     await tools["telegram_login_start"]()
     client.qr.result.set_exception(asyncio.TimeoutError())
 
-    text, image = await tools["telegram_login_check"]()
+    (text,) = await tools["telegram_login_check"]()
 
     assert client.qr.recreated == 1
     assert "устарели" in text
-    assert image.to_image_content().mimeType == "image/png"
+    assert client.qr.url in login._state["page_path"].read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

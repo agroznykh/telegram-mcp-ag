@@ -21,6 +21,7 @@ METADATA_VERSION = re.compile(r'^metadata:\n  version: "(\d+\.\d+)"\n', re.MULTI
 SKILL_VERSIONS = {
     "1.0": "76da59981a698e55488a901f63f20330311ca6766c9c1579d6634160deea61d2",
     "1.1": "35ccc94beb465a96c746f758919f493b6dfadbdf4af4c4c8cc37d9f941cda466",
+    "1.2": "efaa13ccb3afc315355443c9a469f660124f5389db0901a0ada00491242b0a40",
 }
 
 

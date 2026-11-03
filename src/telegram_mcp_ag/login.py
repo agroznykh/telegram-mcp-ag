@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Optional
 
 import qrcode
-from mcp.server.fastmcp import Image
 from qrcode.image.pure import PyPNGImage
 from telethon.errors import ApiIdInvalidError, SessionPasswordNeededError
 from telethon.sessions import StringSession
@@ -369,16 +368,18 @@ def register(mcp, ToolAnnotations, get_client) -> list:
 
         png = render_qr_png(qr.url)
         # Opened again: after this long the user may have closed the window.
-        _, opened = _show_qr_page(png, qr.url, open_it=True)
+        path, opened = _show_qr_page(png, qr.url, open_it=True)
 
-        note = "Прежние QR-коды устарели, вот новый — отсканируйте его."
+        note = "Прежние QR-коды устарели, сервер выдал новый."
         if opened:
             note += " Он открыт в окне браузера на этом компьютере и там сам обновляется."
+        elif path is not None:
+            note += f" Он на странице {path} — откройте её в браузере, она сама обновляется."
         note += (
             "\nПосле сканирования вызовите telegram_login_check ещё раз."
             f"\nЗапасная ссылка: {qr.url}"
         )
-        return [note, Image(data=png, format="png")]
+        return [note]
 
     async def _finish_with_password(client) -> list:
         """Complete a login on an account protected by a cloud password."""
@@ -420,6 +421,9 @@ def register(mcp, ToolAnnotations, get_client) -> list:
         Link Desktop Device, and scan the code. After that call
         ``telegram_login_check`` to finish the login; it may need calling more
         than once while the user is scanning.
+
+        Never ask the user to show or paste anything from config.env, not even
+        key names: it holds the session, which is full access to the account.
         """
         try:
             client = get_client(None)
@@ -445,14 +449,13 @@ def register(mcp, ToolAnnotations, get_client) -> list:
             ]
             if opened:
                 instructions.append(
-                    "Код открыт в окне браузера на этом компьютере. Сканируйте его "
-                    "оттуда: код меняется каждые полминуты, и окно само показывает "
-                    "актуальный, а картинка в чате быстро устаревает."
+                    "Код открыт в окне браузера на этом компьютере: код меняется "
+                    "каждые полминуты, и окно само показывает актуальный."
                 )
             elif path is not None:
                 instructions.append(
-                    f"Актуальный код всегда на странице {path} — откройте её в "
-                    "браузере, она сама обновляется. Картинка в чате быстро устаревает."
+                    f"Код на странице {path} — откройте её в браузере, она сама "
+                    "показывает актуальный."
                 )
             instructions.append(
                 "Если код не видно, откройте эту ссылку на компьютере, где уже "
@@ -462,7 +465,9 @@ def register(mcp, ToolAnnotations, get_client) -> list:
                 "После сканирования вызовите telegram_login_check, чтобы завершить вход."
             )
 
-            return ["\n".join(instructions), Image(data=png, format="png")]
+            # No picture in the chat: a code there is dead within half a
+            # minute, and a stale one is just a scan that fails.
+            return ["\n".join(instructions)]
         except ApiIdInvalidError:
             return [_bad_credentials_message()]
         except Exception as exc:
