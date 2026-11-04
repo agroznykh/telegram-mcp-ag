@@ -265,6 +265,7 @@ def _patch_log_and_format_error():
         "accounts",
         "chats",
         "contacts",
+        "custom_emoji",
         "events",
         "folders",
         "groups",
