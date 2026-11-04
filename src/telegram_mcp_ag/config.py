@@ -254,23 +254,6 @@ def download_defaults() -> dict:
     return values
 
 
-def _ensure_exposed_tools_line(config_path: Path) -> None:
-    """Add the default exposure mode to a config that lacks it.
-
-    Creates the file if there is none: the login flow and hand-written files
-    don't include this line either. Having it in the file means changing the mode
-    is editing a value, not looking up a key. A value already there, even a
-    different one, is the user's decision. A file that can't be written is no
-    problem: server.py applies the same default anyway.
-    """
-    if config_path.exists() and "TELEGRAM_EXPOSED_TOOLS" in dotenv_values(config_path):
-        return
-    try:
-        write_values({"TELEGRAM_EXPOSED_TOOLS": DEFAULT_EXPOSED_TOOLS}, config_path)
-    except OSError:
-        pass
-
-
 def download_media_enabled(mode: Optional[str]) -> bool:
     """Whether a ``TELEGRAM_EXPOSED_TOOLS`` value leaves ``download_media`` registered.
 
@@ -310,23 +293,27 @@ def _effective_exposed_tools(file_values: dict) -> str:
     return DEFAULT_EXPOSED_TOOLS
 
 
-def _ensure_download_lines(config_path: Path) -> None:
-    """Add the download-folder keys that a config lacks, if downloads are enabled.
+def _ensure_default_lines(config_path: Path, present: dict) -> None:
+    """Add the settings that ``config_path`` lacks, in a single write.
 
-    With ``download_media`` not exposed the folders would only be a stray folder
-    and a system access prompt, so nothing is written. Each key is judged on its
-    own: one already in the file, even empty or with another value, is the
-    user's decision and stays. A file that can't be written is no problem:
-    server.py fills the same defaults into the environment.
+    ``present`` is what the file holds now. Always the exposure mode; the
+    download-folder keys only when ``download_media`` is exposed, since otherwise
+    they would only create a stray folder and a system access prompt. Creates
+    the file if there is none: the login flow and hand-written files don't
+    include these lines either. Each key is judged on its own: one already in the
+    file, even empty or with another value, is the user's decision and stays.
+    A file that can't be written is no problem: server.py applies the same
+    defaults to the environment.
     """
-    present = dotenv_values(config_path) if config_path.exists() else {}
-    if not download_media_enabled(_effective_exposed_tools(present)):
-        return
-    missing = {k: v for k, v in download_defaults().items() if k not in present}
-    if not missing:
+    wanted = {}
+    if "TELEGRAM_EXPOSED_TOOLS" not in present:
+        wanted["TELEGRAM_EXPOSED_TOOLS"] = DEFAULT_EXPOSED_TOOLS
+    if download_media_enabled(_effective_exposed_tools({**present, **wanted})):
+        wanted.update({k: v for k, v in download_defaults().items() if k not in present})
+    if not wanted:
         return
     try:
-        write_values(missing, config_path)
+        write_values(wanted, config_path)
     except OSError:
         pass
 
@@ -344,8 +331,7 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     # warning about them has to be seen first.
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
-    _ensure_exposed_tools_line(config_path)
-    _ensure_download_lines(config_path)
+    _ensure_default_lines(config_path, dotenv_values(config_path) if config_path.exists() else {})
     if config_path.exists():
         for key, value in dotenv_values(config_path).items():
             if value is None:

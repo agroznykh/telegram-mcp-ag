@@ -296,12 +296,32 @@ def test_download_defaults_skip_a_fallback_path_the_upstream_would_split(monkeyp
     assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
 
 
+def _ensure_default_lines(config_path):
+    present = config.dotenv_values(config_path) if config_path.exists() else {}
+    config._ensure_default_lines(config_path, present)
+
+
+def test_first_start_with_downloads_enabled_writes_the_file_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", "all")
+    calls = []
+    real = config.write_values
+    monkeypatch.setattr(config, "write_values", lambda *a, **k: (calls.append(a), real(*a, **k)))
+    config_path = tmp_path / "config.env"
+
+    _ensure_default_lines(config_path)
+
+    assert len(calls) == 1
+    values = config.dotenv_values(config_path)
+    assert values["TELEGRAM_EXPOSED_TOOLS"] == config.DEFAULT_EXPOSED_TOOLS
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
+
+
 def test_ensure_download_lines_adds_the_missing_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / "dl" / "Telegram")
     config_path = tmp_path / "config.env"
     config_path.write_text("OTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only+download_media\n", encoding="utf-8")
 
-    config._ensure_download_lines(config_path)
+    _ensure_default_lines(config_path)
 
     values = config.dotenv_values(config_path)
     assert values["OTHER"] == "1"
@@ -317,7 +337,7 @@ def test_ensure_download_lines_keeps_existing_keys_even_when_empty(tmp_path):
         encoding="utf-8",
     )
 
-    config._ensure_download_lines(config_path)
+    _ensure_default_lines(config_path)
 
     values = config.dotenv_values(config_path)
     assert values["TELEGRAM_ALLOWED_ROOTS"] == ""
@@ -333,7 +353,7 @@ def test_ensure_download_lines_ignores_an_unwritable_file(tmp_path, monkeypatch)
     config_path = tmp_path / "config.env"
     config_path.write_text("TELEGRAM_EXPOSED_TOOLS=all\n", encoding="utf-8")
 
-    config._ensure_download_lines(config_path)  # must not raise
+    _ensure_default_lines(config_path)  # must not raise
 
 
 @pytest.mark.parametrize("mode", ["read-only", "all-download_media", "read-only+send_message", ""])
@@ -341,7 +361,7 @@ def test_ensure_download_lines_writes_nothing_without_download_media(tmp_path, m
     config_path = tmp_path / "config.env"
     config_path.write_text(f"TELEGRAM_EXPOSED_TOOLS={mode}\n", encoding="utf-8")
 
-    config._ensure_download_lines(config_path)
+    _ensure_default_lines(config_path)
 
     assert config_path.read_text(encoding="utf-8") == f"TELEGRAM_EXPOSED_TOOLS={mode}\n"
 
@@ -351,7 +371,7 @@ def test_ensure_download_lines_follows_the_environment_over_the_file(tmp_path, m
     config_path.write_text("TELEGRAM_EXPOSED_TOOLS=read-only\n", encoding="utf-8")
     monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", "all")
 
-    config._ensure_download_lines(config_path)
+    _ensure_default_lines(config_path)
 
     assert "TELEGRAM_DOWNLOAD_SUBDIR" in config.dotenv_values(config_path)
 
