@@ -14,6 +14,9 @@ TELEGRAM_ENV_PREFIX = "TELEGRAM_"
 @pytest.fixture(autouse=True)
 def clean_telegram_env(monkeypatch):
     saved = dict(os.environ)
+    # default_download_root() reads user-dirs.dirs from here on Linux; CI runners
+    # set it, and the tests point Path.home() at a temporary folder instead.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     for key in list(os.environ):
         if key.startswith(TELEGRAM_ENV_PREFIX):
             monkeypatch.delenv(key, raising=False)
