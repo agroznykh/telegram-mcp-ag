@@ -150,6 +150,7 @@ def test_patch_reaches_every_wildcard_importing_tools_submodule():
         "accounts",
         "chats",
         "contacts",
+        "custom_emoji",
         "events",
         "folders",
         "groups",
