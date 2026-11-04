@@ -37,6 +37,51 @@ def test_installers_can_read_the_upstream_sha_from_pyproject():
 
 
 @not_windows
+def _run_bash_migration(config_path: Path):
+    script = f'source "{INSTALL_SH}"; CONFIG_PATH="{config_path}"; enable_media_download'
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+
+
+@not_windows
+@pytest.mark.parametrize(
+    "line",
+    [
+        "TELEGRAM_EXPOSED_TOOLS=read-only",
+        '  TELEGRAM_EXPOSED_TOOLS = "read-only" ',
+        "TELEGRAM_EXPOSED_TOOLS='read-only'",
+    ],
+)
+def test_install_sh_switches_plain_read_only_to_download_mode(tmp_path, line):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(f"A=1\n{line}\nB=2\n", encoding="utf-8")
+    config_path.chmod(0o644)
+
+    result = _run_bash_migration(config_path)
+
+    assert result.returncode == 0, result.stderr
+    assert config_path.read_text(encoding="utf-8") == (
+        "A=1\nTELEGRAM_EXPOSED_TOOLS=read-only+download_media\nB=2\n"
+    )
+    assert config_path.stat().st_mode & 0o777 == 0o600
+    assert "Включено скачивание" in result.stdout + result.stderr
+
+
+@not_windows
+@pytest.mark.parametrize(
+    "line",
+    ["TELEGRAM_EXPOSED_TOOLS=all", "TELEGRAM_EXPOSED_TOOLS=read-only+send_message", "TELEGRAM_EXPOSED_TOOLS="],
+)
+def test_install_sh_leaves_any_other_mode_alone(tmp_path, line):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(f"A=1\n{line}\n", encoding="utf-8")
+
+    result = _run_bash_migration(config_path)
+
+    assert result.returncode == 0, result.stderr
+    assert config_path.read_text(encoding="utf-8") == f"A=1\n{line}\n"
+    assert not list(tmp_path.glob("config.env.*"))
+
+
 def test_install_sh_has_valid_bash_syntax():
     result = subprocess.run(["bash", "-n", str(INSTALL_SH)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

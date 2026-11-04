@@ -364,12 +364,62 @@ write_config_env() {
         {
             printf 'TELEGRAM_API_ID=%s\n' "$API_ID"
             printf 'TELEGRAM_API_HASH=%s\n' "$API_HASH"
-            printf 'TELEGRAM_EXPOSED_TOOLS=read-only\n'
+            printf 'TELEGRAM_EXPOSED_TOOLS=read-only+download_media\n'
             printf 'TELEGRAM_DEVICE_MODEL=%s\n' "$device_model"
         } >"$CONFIG_PATH"
     )
     chmod 600 "$CONFIG_PATH"
     ok "api_id и api_hash сохранены."
+}
+
+# Existing installs have `TELEGRAM_EXPOSED_TOOLS=read-only`, which was the default
+# before media download appeared. Only that exact value is switched over (quotes
+# and surrounding spaces allowed); anything else is the user's own choice.
+# No `sed -i`: its syntax differs between macOS and Linux. The file is rewritten
+# through a temp file in the same folder, which also keeps the mode at 600.
+_trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+_is_plain_read_only_line() {
+    local line="$1" rest=""
+    line="$(_trim "$line")"
+    [[ "$line" == TELEGRAM_EXPOSED_TOOLS* ]] || return 1
+    rest="$(_trim "${line#TELEGRAM_EXPOSED_TOOLS}")"
+    [[ "$rest" == =* ]] || return 1
+    rest="$(_trim "${rest#=}")"
+    case "$rest" in
+        read-only | '"read-only"' | "'read-only'") return 0 ;;
+    esac
+    return 1
+}
+
+enable_media_download() {
+    [[ -f "$CONFIG_PATH" ]] || return 0
+    (
+        set +eu
+        umask 077
+        changed=0
+        tmp="$(mktemp "$CONFIG_PATH.XXXXXX")" || exit 1
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            if _is_plain_read_only_line "$line"; then
+                printf '%s\n' 'TELEGRAM_EXPOSED_TOOLS=read-only+download_media' >>"$tmp"
+                changed=1
+            else
+                printf '%s\n' "$line" >>"$tmp"
+            fi
+        done <"$CONFIG_PATH"
+        if [[ "$changed" -eq 1 ]]; then
+            chmod 600 "$tmp" && mv "$tmp" "$CONFIG_PATH" || { rm -f "$tmp"; exit 1; }
+            info "Включено скачивание медиафайлов из Telegram (голосовые, кружки, видео)."
+            info "Отключить: в config.env замените read-only+download_media на read-only."
+        else
+            rm -f "$tmp"
+        fi
+    ) || warn "Не удалось включить скачивание медиафайлов -- не критично, остальное работает и без него."
 }
 
 # ---------------------------------------------------------------------------
@@ -945,6 +995,7 @@ main() {
         run_telegram_login
     fi
 
+    enable_media_download
     register_claude_code
     register_codex
     register_claude_desktop

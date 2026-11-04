@@ -163,19 +163,114 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
     return True
 
 
+DEFAULT_EXPOSED_TOOLS = "read-only+download_media"
+DOWNLOAD_SUBDIR = "Telegram"
+_DOWNLOADS_FOLDER_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+
+def _windows_downloads_dir() -> Optional[Path]:
+    """The Downloads known folder, which the user may have moved to another drive."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    folder_id = _GUID()
+    ctypes.windll.ole32.CLSIDFromString(_DOWNLOADS_FOLDER_ID, ctypes.byref(folder_id))
+    buffer = ctypes.c_wchar_p()
+    result = ctypes.windll.shell32.SHGetKnownFolderPath(
+        ctypes.byref(folder_id), 0, None, ctypes.byref(buffer)
+    )
+    try:
+        if result != 0 or not buffer.value:
+            return None
+        return Path(buffer.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(buffer)
+
+
+def _linux_downloads_dir() -> Optional[Path]:
+    """``XDG_DOWNLOAD_DIR`` from ``~/.config/user-dirs.dirs`` (``Загрузки`` in Russian)."""
+    home = Path.home()
+    try:
+        text = (home / ".config" / "user-dirs.dirs").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("XDG_DOWNLOAD_DIR="):
+            continue
+        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+        if not value:
+            return None
+        return Path(value.replace("$HOME", str(home)))
+    return None
+
+
+def default_download_root() -> Path:
+    """``<Downloads>/Telegram``: where files go when the client names no folder.
+
+    Does not create the folder. Any failure to locate the system Downloads
+    folder falls back to ``~/Downloads``.
+    """
+    downloads: Optional[Path] = None
+    try:
+        if sys.platform == "win32":
+            downloads = _windows_downloads_dir()
+        elif sys.platform.startswith("linux"):
+            downloads = _linux_downloads_dir()
+    except Exception:
+        downloads = None
+    if downloads is None:
+        downloads = Path.home() / "Downloads"
+    return downloads / DOWNLOAD_SUBDIR
+
+
+def download_defaults() -> dict:
+    """The folder settings that enable ``download_media`` without client folders."""
+    return {
+        "TELEGRAM_ALLOWED_ROOTS": str(default_download_root()),
+        "TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK": "1",
+        "TELEGRAM_DOWNLOAD_SUBDIR": DOWNLOAD_SUBDIR,
+    }
+
+
 def _ensure_exposed_tools_line(config_path: Path) -> None:
-    """Add the read-only setting to a config that lacks it.
+    """Add the default exposure mode to a config that lacks it.
 
     Creates the file if there is none: the login flow and hand-written files
     don't include this line either. Having it in the file means changing the mode
     is editing a value, not looking up a key. A value already there, even a
     different one, is the user's decision. A file that can't be written is no
-    problem: server.py defaults to read-only anyway.
+    problem: server.py applies the same default anyway.
     """
     if config_path.exists() and "TELEGRAM_EXPOSED_TOOLS" in dotenv_values(config_path):
         return
     try:
-        write_values({"TELEGRAM_EXPOSED_TOOLS": "read-only"}, config_path)
+        write_values({"TELEGRAM_EXPOSED_TOOLS": DEFAULT_EXPOSED_TOOLS}, config_path)
+    except OSError:
+        pass
+
+
+def _ensure_download_lines(config_path: Path) -> None:
+    """Add the download-folder keys that a config lacks.
+
+    Each key is judged on its own: one already in the file, even empty or with
+    another value, is the user's decision and stays. A file that can't be
+    written is no problem: server.py fills the same defaults into the environment.
+    """
+    present = dotenv_values(config_path) if config_path.exists() else {}
+    missing = {k: v for k, v in download_defaults().items() if k not in present}
+    if not missing:
+        return
+    try:
+        write_values(missing, config_path)
     except OSError:
         pass
 
@@ -194,6 +289,7 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
     _ensure_exposed_tools_line(config_path)
+    _ensure_download_lines(config_path)
     if config_path.exists():
         for key, value in dotenv_values(config_path).items():
             if value is None:

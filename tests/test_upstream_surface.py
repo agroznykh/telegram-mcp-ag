@@ -128,10 +128,16 @@ def test_read_only_mode_exposes_exactly_the_reviewed_tools():
     assert set(_probe("read-only")["tools"]) == set(EXPECTED_READ_ONLY_TOOLS)
 
 
-def test_read_only_is_the_default_when_the_mode_is_missing_or_blank(tmp_path):
+def test_download_media_is_added_by_the_download_mode():
+    tools = set(_probe("read-only+download_media")["tools"])
+    assert tools == set(EXPECTED_READ_ONLY_TOOLS) | {"download_media"}
+
+
+def test_read_only_plus_download_media_is_the_default_when_the_mode_is_missing_or_blank(tmp_path):
     # HOME points away from any real config.env, which could set the mode itself.
     home = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
-    assert set(_probe("", **home)["tools"]) == set(EXPECTED_READ_ONLY_TOOLS)
+    expected = set(EXPECTED_READ_ONLY_TOOLS) | {"download_media"}
+    assert set(_probe("", **home)["tools"]) == expected
 
     env = {k: v for k, v in os.environ.items() if k != "TELEGRAM_EXPOSED_TOOLS"}
     env.update(
@@ -145,7 +151,7 @@ def test_read_only_is_the_default_when_the_mode_is_missing_or_blank(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     tools = set(json.loads(done.stdout.strip().splitlines()[-1])["tools"])
-    assert tools == set(EXPECTED_READ_ONLY_TOOLS)
+    assert tools == set(EXPECTED_READ_ONLY_TOOLS) | {"download_media"}
 
 
 def test_upstream_tools_we_replace_or_distrust_are_hidden_in_read_only():

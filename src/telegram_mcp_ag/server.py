@@ -140,10 +140,18 @@ if not os.environ.get("TELEGRAM_SESSION_LOCK", "").strip():
     os.environ["TELEGRAM_SESSION_LOCK"] = "shared"
 
 # Upstream exposes every tool, sending messages included, when this is unset. A
-# session is full access to the account, so anything wider must be asked for. A
-# blank value is "not set" here too (see config.load).
+# session is full access to the account, so anything wider must be asked for.
+# The default is read-only plus download_media, which writes a file to the user's
+# disk and changes nothing in Telegram. A blank value is "not set" here too (see
+# config.load).
 if not os.environ.get("TELEGRAM_EXPOSED_TOOLS", "").strip():
-    os.environ["TELEGRAM_EXPOSED_TOOLS"] = "read-only"
+    os.environ["TELEGRAM_EXPOSED_TOOLS"] = _config.DEFAULT_EXPOSED_TOOLS
+
+# Folders for download_media, for when config.env could not be written. Same
+# values config.load() puts in the file; a blank value is "not set".
+for _key, _value in _config.download_defaults().items():
+    if not os.environ.get(_key, "").strip():
+        os.environ[_key] = _value
 
 from telegram_mcp import runner as _runner
 from telegram_mcp import runtime as _runtime
@@ -854,8 +862,42 @@ async def _run_login_server() -> None:
         )
 
 
+def _drop_unusable_allowed_roots() -> None:
+    """Remove folders from TELEGRAM_ALLOWED_ROOTS that cannot be created or written.
+
+    Upstream creates every listed folder at startup and exits if it cannot. On
+    macOS the Downloads folder is protected by the system: if the user refused
+    the client access to it, the whole server would fail to start. Dropping the
+    folder leaves downloads working in the project folder the client reports.
+    """
+    raw = os.environ.get("TELEGRAM_ALLOWED_ROOTS", "")
+    roots = _runtime._parse_allowed_roots_env(raw)
+    if not roots:
+        return
+    usable = []
+    for root in roots:
+        try:
+            path = Path(root).expanduser()
+            path.mkdir(parents=True, exist_ok=True)
+            if not path.is_dir() or not os.access(path, os.W_OK):
+                raise PermissionError(f"нет доступа на запись в {path}")
+        except OSError as exc:
+            print(
+                f"telegram-mcp-ag: папка для скачанных файлов недоступна ({root}): {exc}. "
+                "Скачивание будет работать только в папке проекта.",
+                file=sys.stderr,
+            )
+            continue
+        usable.append(root)
+    if usable:
+        os.environ["TELEGRAM_ALLOWED_ROOTS"] = ";".join(usable)
+    else:
+        os.environ.pop("TELEGRAM_ALLOWED_ROOTS", None)
+
+
 def main() -> None:
     """Start the upstream STDIO server after registering this package's tools."""
+    _drop_unusable_allowed_roots()
     if not _LOGIN_MODE:
         _runner.main()
         return
