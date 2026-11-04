@@ -289,7 +289,7 @@ def test_default_download_root_on_linux_ignores_a_relative_path(monkeypatch, tmp
     assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
 
 
-@pytest.mark.parametrize("name", ["Загрузки, архив", "a;b", "a:b"])
+@pytest.mark.parametrize("name", ["Загрузки, архив", "dir;name", "dir:name"])
 def test_download_defaults_skip_a_fallback_path_the_upstream_would_split(monkeypatch, tmp_path, name):
     monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / name / "Telegram")
 
