@@ -46,7 +46,6 @@ from telegram_mcp.runtime import (
     ToolAnnotations,
     ensure_connected,
     get_client,
-    log_and_format_error,
     mcp,
     resolve_entity,
     rich_text_to_str,
@@ -64,8 +63,10 @@ for _name in ("list_inline_buttons", "press_inline_button"):
     mcp._tool_manager.remove_tool(_name)
 
 # Why not upstream's keyboards.py: it cannot see rich-message buttons, and
-# runtime.py is our only point of contact with upstream. The kinds, fields and
-# texts below follow it on purpose, so both tools answer alike.
+# runtime.py is our only point of contact with upstream. The kinds and the fields
+# per kind follow it. The differences are deliberate: `style` is the list of raw
+# flags, `has_callback` means "a callback that can be pressed", and the refusals
+# for the 2FA password and for an unpressable kind use our own texts.
 _KINDS = {
     InlineButtonTypeCallback: "callback",
     InlineButtonTypeUrl: "url",
@@ -89,6 +90,7 @@ _STYLE_FLAGS = ("bg_primary", "bg_success", "bg_danger", "link")
 _RECENT_LIMIT = 20
 _HISTORY_LIMIT = 30
 _TEXT_LIMIT = 256
+_URL_LIMIT = 2048
 _INLINE = "inline"
 _REPLY = "reply"
 
@@ -149,15 +151,18 @@ def _walk_button_rows(node: Any) -> Iterator[List[PageButton]]:
                 yield from _walk_button_rows(value)
 
 
+def _rich_blocks(message):
+    return getattr(getattr(message, "rich_message", None), "blocks", None) or []
+
+
 def collect_page_button_rows(message) -> List[List[PageButton]]:
     """Every row of rich buttons of a message, nested blocks included."""
-    blocks = getattr(getattr(message, "rich_message", None), "blocks", None)
-    return list(_walk_button_rows(blocks)) if blocks else []
+    return list(_walk_button_rows(_rich_blocks(message)))
 
 
-def collect_page_buttons(message) -> List[PageButton]:
-    """Every ``PageButton`` of a rich message, nested blocks included."""
-    return [button for row in collect_page_button_rows(message) for button in row]
+def _text(value, limit: int = _TEXT_LIMIT) -> str:
+    """User-controlled text, cleaned and cut; empty stays empty (not "[empty]")."""
+    return sanitize_user_content(value, max_length=limit) if value else ""
 
 
 def _button_info(raw, text: str, row: int, col: int) -> ButtonInfo:
@@ -169,13 +174,15 @@ def _button_info(raw, text: str, row: int, col: int) -> ButtonInfo:
         data = getattr(button_type, "data", None)
         url = getattr(button_type, "url", None)
         type_name = type(button_type).__name__
+        carrier = button_type
     else:
-        # A button of an older layer (KeyboardButtonCallback & co.) has no `type`.
-        button_type = None
+        # A button of an older layer (KeyboardButtonCallback & co.) has no `type`:
+        # its own fields (data, url, requires_password) play that part.
         data = getattr(raw, "data", None)
         url = getattr(raw, "url", None)
         kind = "callback" if data else "url" if url else "unknown"
         type_name = type(raw).__name__
+        carrier, button_type = raw, None
     icon = getattr(style, "icon", None)
     return ButtonInfo(
         text=text,
@@ -188,7 +195,7 @@ def _button_info(raw, text: str, row: int, col: int) -> ButtonInfo:
         url=url,
         style=[flag for flag in _STYLE_FLAGS if getattr(style, flag, None)],
         icon_emoji_id=str(icon) if icon else None,
-        requires_password=bool(getattr(button_type, "requires_password", None)),
+        requires_password=bool(getattr(carrier, "requires_password", None)),
     )
 
 
@@ -208,7 +215,7 @@ def _keyboard_rows(message):
     else:
         return None, None, []
     rows = [list(getattr(row, "buttons", None) or []) for row in markup.rows or []]
-    return kind, markup, rows
+    return kind, markup, [row for row in rows if row]  # an empty row takes no place
 
 
 def collect_keyboard(message) -> Keyboard:
@@ -228,10 +235,7 @@ def collect_keyboard(message) -> Keyboard:
         for col, raw in enumerate(row):
             buttons.append(_button_info(raw, getattr(raw, "text", "") or "", row_number, col))
         row_number += 1
-    has_keyboard_buttons = any(rows)
-    return Keyboard(
-        buttons, kind if has_keyboard_buttons else None, markup if has_keyboard_buttons else None
-    )
+    return Keyboard(buttons, kind if rows else None, markup if rows else None)
 
 
 def collect_buttons(message) -> List[ButtonInfo]:
@@ -239,7 +243,8 @@ def collect_buttons(message) -> List[ButtonInfo]:
 
 
 def _has_buttons(message) -> bool:
-    return bool(collect_buttons(message))
+    """Cheaper than ``collect_buttons``: stops at the first button found."""
+    return bool(next(_walk_button_rows(_rich_blocks(message)), None) or _keyboard_rows(message)[2])
 
 
 def _metadata(keyboard: Keyboard) -> dict:
@@ -268,16 +273,16 @@ def _record(index: int, button: ButtonInfo) -> dict:
         record["style"] = button.style
     if button.icon_emoji_id:
         record["icon_emoji_id"] = button.icon_emoji_id
-    if button.url and (button.kind in _URL_KINDS or button.button_type is None):
-        record["url"] = button.url
+    if button.url and button.kind in _URL_KINDS:
+        record["url"] = _text(button.url, _URL_LIMIT)
     if button.requires_password and button.kind == "callback":
         record["requires_password"] = True
     kind_type = button.button_type
     if button.kind == "switch_inline":
-        record["query"] = sanitize_user_content(kind_type.query or "", max_length=_TEXT_LIMIT)
+        record["query"] = _text(kind_type.query)
         record["same_peer"] = bool(kind_type.same_peer)
     elif button.kind == "copy":
-        record["copy_text"] = sanitize_user_content(kind_type.copy_text, max_length=_TEXT_LIMIT)
+        record["copy_text"] = _text(kind_type.copy_text)
     elif button.kind == "user_profile":
         record["user_id"] = kind_type.user_id
     elif button.kind == "request_poll" and kind_type.quiz is not None:
@@ -296,11 +301,16 @@ def _refusal(button: ButtonInfo) -> str:
         )
     if button.kind == "disabled":
         return "This button is disabled; Telegram does not allow pressing it."
-    if button.kind in _URL_KINDS or (button.kind == "url" and button.url):
-        return f"Selected button opens a URL instead of sending a callback: {button.url}"
+    if button.kind in _URL_KINDS:
+        return (
+            "Selected button opens a URL instead of sending a callback: "
+            f"{_text(button.url, _URL_LIMIT)}"
+        )
     if button.kind == "copy":
-        copy_text = sanitize_user_content(button.button_type.copy_text, max_length=_TEXT_LIMIT)
-        return f"Selected button copies text instead of sending a callback: {copy_text}"
+        return (
+            "Selected button copies text instead of sending a callback: "
+            f"{_text(button.button_type.copy_text)}"
+        )
     if button.kind == "text":
         return (
             "Selected button is on a reply keyboard: pressing it sends its text as a "
@@ -350,6 +360,17 @@ async def _find_message(cl, entity, message_id: Optional[int], limit: int):
     return await _full_rich_message(cl, entity, found)
 
 
+def _names(button: ButtonInfo) -> set:
+    """Texts a caller may use for a button: as sent, and as the tools show it."""
+    shown = (button.text or "<no text>").strip().lower()
+    return {
+        button.text.strip().lower(),
+        _text(button.text).strip().lower(),
+        _text(button.text, 64).strip().lower(),
+        shown,
+    }
+
+
 def _int_arg(value: Union[int, str, None], name: str):
     """``(value, error)``: accepts digits given as text, rejects anything else."""
     if isinstance(value, str):
@@ -379,7 +400,8 @@ async def list_inline_buttons(
     web_app, copy, switch_inline, buy, user_profile, disabled, text (reply
     keyboard), request_phone, request_location, request_poll, request_peer, or
     unknown (then type names the Telegram class). has_callback is true for a
-    callback button that can be pressed.
+    callback button that can be pressed; a game button is pressable too (kind
+    game), although has_callback is false for it.
 
     Other fields by kind: url, query and same_peer, copy_text, user_id, quiz,
     requires_password, icon_emoji_id. style is the raw flags Telegram sent
@@ -411,7 +433,8 @@ async def list_inline_buttons(
             metadata={"message_id": target.id, "date": target.date, **_metadata(keyboard)},
         )
     except Exception as exc:
-        return log_and_format_error(
+        # Looked up at call time: server.py replaces it to add re-login advice.
+        return _runtime.log_and_format_error(
             "list_inline_buttons", exc, chat_id=chat_id, message_id=message_id, limit=limit
         )
 
@@ -479,7 +502,8 @@ async def press_inline_button(
         chosen = None
         if button_text:
             wanted = button_text.strip().lower()
-            chosen = next((b for b in buttons if b.text.strip().lower() == wanted), None)
+            # The listing shows the cleaned, cut text: accept it as well as the raw one.
+            chosen = next((b for b in buttons if wanted in _names(b)), None)
         if chosen is None and button_index is not None:
             if button_index < 0 or button_index >= len(buttons):
                 return f"button_index out of range. Valid indices: 0-{len(buttons) - 1}."
@@ -527,10 +551,10 @@ async def press_inline_button(
             response += " Telegram displayed an alert to the user."
         metadata = {"response": response, "alert": alert}
         if getattr(answer, "url", None):
-            metadata["url"] = answer.url
+            metadata["url"] = _text(answer.url, _URL_LIMIT)
         return _runtime.format_tool_result([], metadata=metadata)
     except Exception as exc:
-        return log_and_format_error(
+        return _runtime.log_and_format_error(
             "press_inline_button",
             exc,
             chat_id=chat_id,

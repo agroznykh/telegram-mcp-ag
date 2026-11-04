@@ -486,6 +486,83 @@ def test_rich_buttons_have_no_icon(client):
     assert record["style"] == ["link"]
 
 
+def test_empty_query_and_copy_text_stay_empty(client):
+    client.messages = [
+        _message(
+            None,
+            markup=_inline(
+                [
+                    _inline_button("s", types.InlineButtonTypeSwitchInline(query="")),
+                    _inline_button("c", types.InlineButtonTypeCopy(copy_text="")),
+                ]
+            ),
+        )
+    ]
+
+    switch, copy_ = _listed(_run(rich_buttons.list_inline_buttons(chat_id=1)))["results"]
+    refusal = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_index=1))
+
+    assert switch["query"] == ""
+    assert copy_["copy_text"] == ""
+    assert "[empty]" not in refusal
+
+
+def test_urls_are_cleaned_and_cut(client):
+    long_url = "https://example.com/" + "a" * 5000
+    client.messages = [
+        _message(None, markup=_inline([_inline_button("u", types.InlineButtonTypeUrl(url=long_url))]))
+    ]
+    client.answer = SimpleNamespace(message=None, alert=None, url=long_url)
+
+    listed = _listed(_run(rich_buttons.list_inline_buttons(chat_id=1)))["results"][0]
+    refusal = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_index=0))
+
+    assert len(listed["url"]) < 2200
+    assert len(refusal) < 2400
+
+    client.messages = [_message(None, markup=_inline([_inline_button("cb")]))]
+    pressed = _listed(_run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_index=0)))
+    assert len(pressed["url"]) < 2200
+
+
+def test_button_text_as_shown_by_the_tools_is_accepted(client):
+    zero_width = "Buy​ now"
+    long_label = "L" * 100
+    client.messages = [
+        _message(_rich(_row(_button(zero_width), _button(long_label)))),
+    ]
+
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="Buy now"))
+    shown = _listed(_run(rich_buttons.list_inline_buttons(chat_id=1)))["results"][1]["text"]
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text=shown))
+
+    assert [r.data for r in _pressed(client)] == [zero_width.encode(), long_label.encode()]
+
+
+def test_old_layer_callback_with_password_is_not_pressable():
+    legacy = SimpleNamespace(text="p", data=b"x", url=None, requires_password=True)
+    markup = types.ReplyInlineMarkup(rows=[SimpleNamespace(buttons=[legacy])])
+
+    (info,) = rich_buttons.collect_buttons(_message(None, markup=markup))
+
+    assert info.requires_password is True
+    assert info.pressable is False
+
+
+def test_empty_keyboard_row_takes_no_row_number():
+    markup = _inline([_inline_button("a")], [], [_inline_button("b")])
+
+    assert _positions(_message(None, markup=markup)) == [("a", 0, 0), ("b", 1, 0)]
+
+
+def test_errors_go_through_the_function_server_py_patches(client, monkeypatch):
+    client.messages = [_message(_rich(_row(_button("1"))))]
+    client.raises = RuntimeError("boom")
+    monkeypatch.setattr(rich_buttons._runtime, "log_and_format_error", lambda *a, **k: "PATCHED")
+
+    assert _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_index=0)) == "PATCHED"
+
+
 def test_password_callback_is_flagged_and_not_pressable(client):
     record = _only_record(
         _message(
@@ -701,7 +778,6 @@ def test_press_unknown_text_lists_the_available_buttons(client):
     [
         (types.InlineButtonTypeCallback(data=b"x", requires_password=True), "password"),
         (types.InlineButtonTypeDisabled(), "disabled"),
-        (types.InlineButtonTypeUrl(url="https://example.com"), "https://example.com"),
         (
             types.InlineButtonTypeUrl(url="https://example.com/u"),
             "opens a URL instead of sending a callback: https://example.com/u",
@@ -735,7 +811,12 @@ def test_press_unknown_text_lists_the_available_buttons(client):
     ],
 )
 def test_press_refuses_what_cannot_be_pressed(client, button_type, expected):
-    client.messages = [_message(_rich(_row(_button("b", button_type))))]
+    # Reply-keyboard types come in a ReplyKeyboardMarkup, inline ones in a rich message,
+    # as Telegram sends them: the schema does not allow a reply type in a PageButton.
+    if type(button_type).__name__.startswith("ButtonType"):
+        client.messages = [_message(markup=_reply([_reply_button("b", button_type)]))]
+    else:
+        client.messages = [_message(_rich(_row(_button("b", button_type))))]
 
     result = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_index=0))
 
