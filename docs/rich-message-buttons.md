@@ -28,8 +28,14 @@ message.rich_message              # RichMessage(blocks, photos, documents, rtl, 
 
 - Кнопки собираются рекурсивно из `rich_message.blocks` в экранном порядке, затем идут
   кнопки обычной клавиатуры. Нумерация сквозная, индекс из списка подходит для нажатия.
-- `list_inline_buttons` отдаёт: `index`, `text`, `kind` (`callback`, `url`, `disabled`,
-  `web_view`, `copy`…), `has_callback`, а также `style`, `url`, `requires_password`, когда они есть.
+- `list_inline_buttons` отдаёт: `index`, `row`, `col` (с нуля; строки rich-блоков идут первыми),
+  `text`, `kind` (`callback`, `game`, `url`, `url_auth`, `web_view`, `web_app`, `copy`,
+  `switch_inline`, `buy`, `user_profile`, `disabled`, `text`, `request_phone`,
+  `request_location`, `request_poll`, `request_peer`, `unknown` + `type`), `has_callback`, а также
+  `style`, `icon_emoji_id`, `url`, `query`/`same_peer`, `copy_text`, `user_id`, `quiz`,
+  `requires_password`, когда они есть. В метаданных — `keyboard` (`inline`/`reply`), для `reply`
+  ещё `placeholder` и `single_use`. Обычная клавиатура бота (`reply`) читается из сырого
+  `reply_markup`, не из `message.buttons`.
 - `style` — сырые флаги Telegram (`bg_primary`, `bg_success`, `bg_danger`, `link`).
   Сервер их **не интерпретирует**: что значит «выбрано», решает вызывающий.
 - `press_inline_button` для callback-кнопки шлёт `messages.getBotCallbackAnswer` с
