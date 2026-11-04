@@ -28,6 +28,7 @@ print(json.dumps({
     "tools": tools,
     "transcribe": os.environ.get("TELEGRAM_TRANSCRIBE"),
     "lock": os.environ.get("TELEGRAM_SESSION_LOCK"),
+    "roots": os.environ.get("TELEGRAM_ALLOWED_ROOTS"),
 }))
 """
 
@@ -131,6 +132,20 @@ def test_read_only_mode_exposes_exactly_the_reviewed_tools():
 def test_download_media_is_added_by_the_download_mode():
     tools = set(_probe("read-only+download_media")["tools"])
     assert tools == set(EXPECTED_READ_ONLY_TOOLS) | {"download_media"}
+
+
+def test_download_folder_is_set_up_only_when_download_media_is_exposed(tmp_path):
+    # A home of its own: loading the config writes the folder keys into it, and
+    # a file shared with the next probe would carry them over.
+    def probe(mode, name):
+        home = tmp_path / name
+        home.mkdir()
+        return _probe(mode, HOME=str(home), USERPROFILE=str(home))
+
+    assert probe("read-only", "a")["roots"] is None
+    assert probe("all-download_media", "b")["roots"] is None
+    assert probe("read-only+download_media", "c")["roots"]
+    assert probe("all", "d")["roots"]
 
 
 def test_read_only_is_the_default_when_the_mode_is_missing_or_blank(tmp_path):

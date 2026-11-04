@@ -166,6 +166,7 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
 
 DEFAULT_EXPOSED_TOOLS = "read-only"
 DOWNLOAD_SUBDIR = "Telegram"
+DOWNLOAD_TOOL = "download_media"
 _DOWNLOADS_FOLDER_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
@@ -270,14 +271,57 @@ def _ensure_exposed_tools_line(config_path: Path) -> None:
         pass
 
 
-def _ensure_download_lines(config_path: Path) -> None:
-    """Add the download-folder keys that a config lacks.
+def download_media_enabled(mode: Optional[str]) -> bool:
+    """Whether a ``TELEGRAM_EXPOSED_TOOLS`` value leaves ``download_media`` registered.
 
-    Each key is judged on its own: one already in the file, even empty or with
-    another value, is the user's decision and stays. A file that can't be
-    written is no problem: server.py fills the same defaults into the environment.
+    Mirrors upstream's grammar (``all`` or ``read-only``, then ``+tool,tool`` for
+    ``read-only`` only, then ``-tool,tool``), so that the folders are set up
+    exactly when the tool exists. tests/test_server.py checks it against upstream.
+    An invalid value is "no": upstream rejects it at startup anyway.
+    """
+    value = (mode or "").strip().lower()
+    for base in ("read-only", "all"):
+        rest = value[len(base) :]
+        if value.startswith(base) and rest[:1] in ("", "+", "-"):
+            break
+    else:
+        return False
+
+    def names(text: str) -> list:
+        return [part.strip() for part in text.split(",") if part.strip()]
+
+    allowlist, exclusions = [], []
+    if rest.startswith("+"):
+        head, separator, tail = rest[1:].partition("-")
+        allowlist = names(head)
+        exclusions = names(tail) if separator else []
+    elif rest.startswith("-"):
+        exclusions = names(rest[1:])
+    if DOWNLOAD_TOOL in exclusions:
+        return False
+    return base == "all" or DOWNLOAD_TOOL in allowlist
+
+
+def _effective_exposed_tools(file_values: dict) -> str:
+    """The mode the server will run with: environment, then file, then default."""
+    for source in (os.environ.get("TELEGRAM_EXPOSED_TOOLS"), file_values.get("TELEGRAM_EXPOSED_TOOLS")):
+        if source and source.strip():
+            return source
+    return DEFAULT_EXPOSED_TOOLS
+
+
+def _ensure_download_lines(config_path: Path) -> None:
+    """Add the download-folder keys that a config lacks, if downloads are enabled.
+
+    With ``download_media`` not exposed the folders would only be a stray folder
+    and a system access prompt, so nothing is written. Each key is judged on its
+    own: one already in the file, even empty or with another value, is the
+    user's decision and stays. A file that can't be written is no problem:
+    server.py fills the same defaults into the environment.
     """
     present = dotenv_values(config_path) if config_path.exists() else {}
+    if not download_media_enabled(_effective_exposed_tools(present)):
+        return
     missing = {k: v for k, v in download_defaults().items() if k not in present}
     if not missing:
         return

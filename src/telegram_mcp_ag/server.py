@@ -148,10 +148,12 @@ if not os.environ.get("TELEGRAM_EXPOSED_TOOLS", "").strip():
     os.environ["TELEGRAM_EXPOSED_TOOLS"] = _config.DEFAULT_EXPOSED_TOOLS
 
 # Folders for download_media, for when config.env could not be written. Same
-# values config.load() puts in the file; a blank value is "not set".
-for _key, _value in _config.download_defaults().items():
-    if not os.environ.get(_key, "").strip():
-        os.environ[_key] = _value
+# values config.load() puts in the file; a blank value is "not set". Only when
+# the tool is exposed: otherwise upstream would still create the folder.
+if _config.download_media_enabled(os.environ["TELEGRAM_EXPOSED_TOOLS"]):
+    for _key, _value in _config.download_defaults().items():
+        if not os.environ.get(_key, "").strip():
+            os.environ[_key] = _value
 
 from telegram_mcp import runner as _runner
 from telegram_mcp import runtime as _runtime

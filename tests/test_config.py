@@ -13,9 +13,15 @@ TELEGRAM_ENV_PREFIX = "TELEGRAM_"
 
 @pytest.fixture(autouse=True)
 def clean_telegram_env(monkeypatch):
+    saved = dict(os.environ)
     for key in list(os.environ):
         if key.startswith(TELEGRAM_ENV_PREFIX):
             monkeypatch.delenv(key, raising=False)
+    yield
+    # config.load() writes into os.environ directly, which monkeypatch does not
+    # track for keys that were absent: put the environment back by hand.
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def _valid_session_string(dc_id=2):
@@ -197,9 +203,8 @@ def test_load_creates_a_missing_config_with_the_exposed_tools_line(tmp_path, mon
     config.load(config_path=config_path)
 
     content = config_path.read_text(encoding="utf-8")
-    assert content.startswith("TELEGRAM_EXPOSED_TOOLS=read-only\n")
-    assert "TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1\n" in content
-    assert "TELEGRAM_DOWNLOAD_SUBDIR=Telegram\n" in content
+    # Plain read-only has no download_media, so no download-folder keys.
+    assert content == "TELEGRAM_EXPOSED_TOOLS=read-only\n"
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +299,7 @@ def test_download_defaults_skip_a_fallback_path_the_upstream_would_split(monkeyp
 def test_ensure_download_lines_adds_the_missing_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / "dl" / "Telegram")
     config_path = tmp_path / "config.env"
-    config_path.write_text("OTHER=1\n", encoding="utf-8")
+    config_path.write_text("OTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only+download_media\n", encoding="utf-8")
 
     config._ensure_download_lines(config_path)
 
@@ -308,7 +313,8 @@ def test_ensure_download_lines_adds_the_missing_keys(tmp_path, monkeypatch):
 def test_ensure_download_lines_keeps_existing_keys_even_when_empty(tmp_path):
     config_path = tmp_path / "config.env"
     config_path.write_text(
-        "TELEGRAM_ALLOWED_ROOTS=\nTELEGRAM_DOWNLOAD_SUBDIR=Mine\n", encoding="utf-8"
+        "TELEGRAM_EXPOSED_TOOLS=all\nTELEGRAM_ALLOWED_ROOTS=\nTELEGRAM_DOWNLOAD_SUBDIR=Mine\n",
+        encoding="utf-8",
     )
 
     config._ensure_download_lines(config_path)
@@ -324,8 +330,53 @@ def test_ensure_download_lines_ignores_an_unwritable_file(tmp_path, monkeypatch)
         raise PermissionError("read-only file system")
 
     monkeypatch.setattr(config, "write_values", refuse)
+    config_path = tmp_path / "config.env"
+    config_path.write_text("TELEGRAM_EXPOSED_TOOLS=all\n", encoding="utf-8")
 
-    config._ensure_download_lines(tmp_path / "config.env")  # must not raise
+    config._ensure_download_lines(config_path)  # must not raise
+
+
+@pytest.mark.parametrize("mode", ["read-only", "all-download_media", "read-only+send_message", ""])
+def test_ensure_download_lines_writes_nothing_without_download_media(tmp_path, mode):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(f"TELEGRAM_EXPOSED_TOOLS={mode}\n", encoding="utf-8")
+
+    config._ensure_download_lines(config_path)
+
+    assert config_path.read_text(encoding="utf-8") == f"TELEGRAM_EXPOSED_TOOLS={mode}\n"
+
+
+def test_ensure_download_lines_follows_the_environment_over_the_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.env"
+    config_path.write_text("TELEGRAM_EXPOSED_TOOLS=read-only\n", encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", "all")
+
+    config._ensure_download_lines(config_path)
+
+    assert "TELEGRAM_DOWNLOAD_SUBDIR" in config.dotenv_values(config_path)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("read-only", False),
+        ("read-only+download_media", True),
+        ("READ-ONLY+Download_Media", True),
+        ("read-only+send_message,download_media", True),
+        ("read-only+download_media-send_message", True),
+        ("all", True),
+        ("all-send_message", True),
+        ("all-download_media", False),
+        ("read-only+download_media-download_media", False),
+        ("read-only+send_message", False),
+        ("allx", False),
+        ("nonsense", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_download_media_enabled(mode, expected):
+    assert config.download_media_enabled(mode) is expected
 
 
 def test_write_values_creates_an_owner_only_file(tmp_path):
