@@ -6,6 +6,7 @@ and exits with a raw traceback or a bare stderr message if they are missing.
 """
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -198,8 +199,10 @@ def _windows_downloads_dir() -> Optional[Path]:
 def _linux_downloads_dir() -> Optional[Path]:
     """``XDG_DOWNLOAD_DIR`` from ``~/.config/user-dirs.dirs`` (``Загрузки`` in Russian)."""
     home = Path.home()
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    config_dir = Path(config_home) if config_home and os.path.isabs(config_home) else home / ".config"
     try:
-        text = (home / ".config" / "user-dirs.dirs").read_text(encoding="utf-8")
+        text = (config_dir / "user-dirs.dirs").read_text(encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():
@@ -209,7 +212,10 @@ def _linux_downloads_dir() -> Optional[Path]:
         value = line.split("=", 1)[1].strip().strip('"').strip("'")
         if not value:
             return None
-        return Path(value.replace("$HOME", str(home)))
+        path = Path(value.replace("${HOME}", str(home)).replace("$HOME", str(home)))
+        # A relative path would be resolved against whatever folder the client
+        # started the server in.
+        return path if path.is_absolute() else None
     return None
 
 
@@ -234,11 +240,17 @@ def default_download_root() -> Path:
 
 def download_defaults() -> dict:
     """The folder settings that enable ``download_media`` without client folders."""
-    return {
-        "TELEGRAM_ALLOWED_ROOTS": str(default_download_root()),
+    values = {
         "TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK": "1",
         "TELEGRAM_DOWNLOAD_SUBDIR": DOWNLOAD_SUBDIR,
     }
+    root = str(default_download_root())
+    # Upstream splits this list on ; , and : (a drive colon excepted). A path
+    # containing one would turn into a wider parent folder plus a relative one,
+    # so such a path is not offered as a fallback at all.
+    if not re.search(r"[;,]|(?<!^[A-Za-z]):", root):
+        values["TELEGRAM_ALLOWED_ROOTS"] = root
+    return values
 
 
 def _ensure_exposed_tools_line(config_path: Path) -> None:

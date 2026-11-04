@@ -403,15 +403,22 @@ enable_media_download() {
         set +eu
         umask 077
         changed=0
+        failed=0
         tmp="$(mktemp "$CONFIG_PATH.XXXXXX")" || exit 1
         while IFS= read -r line || [[ -n "$line" ]]; do
             if _is_plain_read_only_line "$line"; then
-                printf '%s\n' 'TELEGRAM_EXPOSED_TOOLS=read-only+download_media' >>"$tmp"
+                printf '%s\n' 'TELEGRAM_EXPOSED_TOOLS=read-only+download_media' >>"$tmp" || failed=1
                 changed=1
             else
-                printf '%s\n' "$line" >>"$tmp"
+                printf '%s\n' "$line" >>"$tmp" || failed=1
             fi
         done <"$CONFIG_PATH"
+        # The file holds the Telegram session: a failed write (disk full) must
+        # leave the original in place, never swap in a truncated copy.
+        if [[ "$failed" -eq 1 ]]; then
+            rm -f "$tmp"
+            exit 1
+        fi
         if [[ "$changed" -eq 1 ]]; then
             chmod 600 "$tmp" && mv "$tmp" "$CONFIG_PATH" || { rm -f "$tmp"; exit 1; }
             info "Включено скачивание медиафайлов из Telegram (голосовые, кружки, видео)."

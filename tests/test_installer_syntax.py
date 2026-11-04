@@ -36,7 +36,6 @@ def test_installers_can_read_the_upstream_sha_from_pyproject():
     assert re.search(r"chigwell/telegram-mcp\.git@[0-9a-f]{40}", pyproject)
 
 
-@not_windows
 def _run_bash_migration(config_path: Path):
     script = f'source "{INSTALL_SH}"; CONFIG_PATH="{config_path}"; enable_media_download'
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True)
@@ -82,6 +81,7 @@ def test_install_sh_leaves_any_other_mode_alone(tmp_path, line):
     assert not list(tmp_path.glob("config.env.*"))
 
 
+@not_windows
 def test_install_sh_has_valid_bash_syntax():
     result = subprocess.run(["bash", "-n", str(INSTALL_SH)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

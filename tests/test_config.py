@@ -260,6 +260,37 @@ def test_default_download_root_on_windows_falls_back_when_the_lookup_fails(monke
     assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
 
 
+def test_default_download_root_on_linux_honours_xdg_config_home_and_braced_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="${HOME}/Загрузки"\n', encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
+
+    assert config.default_download_root() == tmp_path / "Загрузки" / "Telegram"
+
+
+def test_default_download_root_on_linux_ignores_a_relative_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="Загрузки"\n', encoding="utf-8")
+
+    assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
+
+
+@pytest.mark.parametrize("name", ["Загрузки, архив", "a;b", "a:b"])
+def test_download_defaults_skip_a_fallback_path_the_upstream_would_split(monkeypatch, tmp_path, name):
+    monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / name / "Telegram")
+
+    values = config.download_defaults()
+
+    assert "TELEGRAM_ALLOWED_ROOTS" not in values
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
+
+
 def test_ensure_download_lines_adds_the_missing_keys(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / "dl" / "Telegram")
     config_path = tmp_path / "config.env"
