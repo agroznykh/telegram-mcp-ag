@@ -141,8 +141,8 @@ if not os.environ.get("TELEGRAM_SESSION_LOCK", "").strip():
 
 # Upstream exposes every tool, sending messages included, when this is unset. A
 # session is full access to the account, so anything wider must be asked for.
-# The default is read-only plus download_media, which writes a file to the user's
-# disk and changes nothing in Telegram. A blank value is "not set" here too (see
+# Writing a file to the user's disk (download_media) is opt-in: the value
+# "read-only+download_media". A blank value is "not set" here too (see
 # config.load).
 if not os.environ.get("TELEGRAM_EXPOSED_TOOLS", "").strip():
     os.environ["TELEGRAM_EXPOSED_TOOLS"] = _config.DEFAULT_EXPOSED_TOOLS

@@ -164,7 +164,7 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
     return True
 
 
-DEFAULT_EXPOSED_TOOLS = "read-only+download_media"
+DEFAULT_EXPOSED_TOOLS = "read-only"
 DOWNLOAD_SUBDIR = "Telegram"
 _DOWNLOADS_FOLDER_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
 

@@ -446,7 +446,7 @@ function Write-ConfigEnv {
     $lines = @(
         "TELEGRAM_API_ID=$ApiId"
         "TELEGRAM_API_HASH=$ApiHash"
-        'TELEGRAM_EXPOSED_TOOLS=read-only+download_media'
+        'TELEGRAM_EXPOSED_TOOLS=read-only'
         "TELEGRAM_DEVICE_MODEL=$deviceModel"
     )
     $content = ($lines -join "`n") + "`n"
@@ -460,33 +460,6 @@ function Write-ConfigEnv {
 
     Protect-ConfigFile -Path $ConfigPath
     Write-Ok 'api_id и api_hash сохранены.'
-}
-
-# Existing installs have TELEGRAM_EXPOSED_TOOLS=read-only, which was the default
-# before media download appeared. Only that exact value is switched over (quotes
-# and surrounding spaces allowed); anything else is the user's own choice.
-function Enable-MediaDownload {
-    if (-not (Test-Path $ConfigPath)) { return }
-    $content = [System.IO.File]::ReadAllText($ConfigPath)
-    $pattern = '(?m)^[ \t]*TELEGRAM_EXPOSED_TOOLS[ \t]*=[ \t]*(["'']?)read-only\1[ \t]*(?=\r?$)'
-    # -cnotmatch: -notmatch ignores case but [regex]::Replace does not, and
-    # install.sh compares case-sensitively too.
-    if ($content -cnotmatch $pattern) { return }
-    $updated = [regex]::Replace($content, $pattern, 'TELEGRAM_EXPOSED_TOOLS=read-only+download_media')
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    # Through a temp file in the same folder: WriteAllText on the file itself
-    # empties it first, and an interrupted write would lose the session.
-    $tmp = "$ConfigPath.tmp"
-    try {
-        [System.IO.File]::WriteAllText($tmp, $updated, $utf8NoBom)
-        Protect-ConfigFile -Path $tmp
-        Move-Item -Path $tmp -Destination $ConfigPath -Force
-    } finally {
-        if (Test-Path $tmp) { Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue }
-    }
-    Protect-ConfigFile -Path $ConfigPath
-    Write-Info 'Включено скачивание медиафайлов из Telegram (голосовые, кружки, видео).'
-    Write-Info 'Отключить: в config.env замените read-only+download_media на read-only.'
 }
 
 # ---------------------------------------------------------------------------
@@ -1072,7 +1045,7 @@ function Invoke-Main {
     # Each step degrades independently: a client that isn't installed, or
     # an unexpected error registering one of them, must not stop the rest
     # from being tried -- mirrors install.sh's per-client resilience.
-    foreach ($step in @('Enable-MediaDownload', 'Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Install-ClaudeSkills', 'Install-CodexSkills', 'Invoke-SelfCheck')) {
+    foreach ($step in @('Register-ClaudeCode', 'Register-Codex', 'Register-ClaudeDesktop', 'Install-ClaudeSkills', 'Install-CodexSkills', 'Invoke-SelfCheck')) {
         try {
             & $step
         } catch {

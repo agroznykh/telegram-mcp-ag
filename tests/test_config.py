@@ -170,7 +170,7 @@ def test_load_adds_a_missing_exposed_tools_line(tmp_path, monkeypatch):
     config.load(config_path=config_path)
 
     content = config_path.read_text(encoding="utf-8")
-    assert content.startswith("# my note\nOTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only+download_media\n")
+    assert content.startswith("# my note\nOTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only\n")
 
 
 @pytest.mark.parametrize(
@@ -197,7 +197,7 @@ def test_load_creates_a_missing_config_with_the_exposed_tools_line(tmp_path, mon
     config.load(config_path=config_path)
 
     content = config_path.read_text(encoding="utf-8")
-    assert content.startswith("TELEGRAM_EXPOSED_TOOLS=read-only+download_media\n")
+    assert content.startswith("TELEGRAM_EXPOSED_TOOLS=read-only\n")
     assert "TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1\n" in content
     assert "TELEGRAM_DOWNLOAD_SUBDIR=Telegram\n" in content
 
