@@ -13,9 +13,18 @@ TELEGRAM_ENV_PREFIX = "TELEGRAM_"
 
 @pytest.fixture(autouse=True)
 def clean_telegram_env(monkeypatch):
+    saved = dict(os.environ)
+    # default_download_root() reads user-dirs.dirs from here on Linux; CI runners
+    # set it, and the tests point Path.home() at a temporary folder instead.
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     for key in list(os.environ):
         if key.startswith(TELEGRAM_ENV_PREFIX):
             monkeypatch.delenv(key, raising=False)
+    yield
+    # config.load() writes into os.environ directly, which monkeypatch does not
+    # track for keys that were absent: put the environment back by hand.
+    os.environ.clear()
+    os.environ.update(saved)
 
 
 def _valid_session_string(dc_id=2):
@@ -169,12 +178,13 @@ def test_load_adds_a_missing_exposed_tools_line(tmp_path, monkeypatch):
 
     config.load(config_path=config_path)
 
-    assert config_path.read_text(encoding="utf-8") == (
-        "# my note\nOTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only\n"
-    )
+    content = config_path.read_text(encoding="utf-8")
+    assert content.startswith("# my note\nOTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only\n")
 
 
-@pytest.mark.parametrize("line", ["TELEGRAM_EXPOSED_TOOLS=all", "TELEGRAM_EXPOSED_TOOLS="])
+@pytest.mark.parametrize(
+    "line", ["TELEGRAM_EXPOSED_TOOLS=all", "TELEGRAM_EXPOSED_TOOLS=", "TELEGRAM_EXPOSED_TOOLS=read-only"]
+)
 def test_load_keeps_an_existing_exposed_tools_line(tmp_path, monkeypatch, line):
     monkeypatch.setenv("TELEGRAM_API_ID", "1")
     monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
@@ -184,7 +194,7 @@ def test_load_keeps_an_existing_exposed_tools_line(tmp_path, monkeypatch, line):
 
     config.load(config_path=config_path)
 
-    assert config_path.read_text(encoding="utf-8") == f"{line}\n"
+    assert config_path.read_text(encoding="utf-8").startswith(f"{line}\n")
 
 
 def test_load_creates_a_missing_config_with_the_exposed_tools_line(tmp_path, monkeypatch):
@@ -195,7 +205,201 @@ def test_load_creates_a_missing_config_with_the_exposed_tools_line(tmp_path, mon
 
     config.load(config_path=config_path)
 
-    assert config_path.read_text(encoding="utf-8") == "TELEGRAM_EXPOSED_TOOLS=read-only\n"
+    content = config_path.read_text(encoding="utf-8")
+    # Plain read-only has no download_media, so no download-folder keys.
+    assert content == "TELEGRAM_EXPOSED_TOOLS=read-only\n"
+
+
+# ---------------------------------------------------------------------------
+# Download folders
+# ---------------------------------------------------------------------------
+
+
+def test_default_download_root_on_macos(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+
+    assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
+
+
+def test_default_download_root_on_linux_reads_xdg_user_dirs(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "user-dirs.dirs").write_text(
+        '# comment\nXDG_DESKTOP_DIR="$HOME/Рабочий стол"\nXDG_DOWNLOAD_DIR="$HOME/Загрузки"\n',
+        encoding="utf-8",
+    )
+
+    assert config.default_download_root() == tmp_path / "Загрузки" / "Telegram"
+
+
+@pytest.mark.parametrize("content", [None, "XDG_DESKTOP_DIR=\"$HOME/Desktop\"\n", 'XDG_DOWNLOAD_DIR=""\n'])
+def test_default_download_root_on_linux_falls_back_to_downloads(monkeypatch, tmp_path, content):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    if content is not None:
+        (tmp_path / ".config").mkdir()
+        (tmp_path / ".config" / "user-dirs.dirs").write_text(content, encoding="utf-8")
+
+    assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
+
+
+def test_default_download_root_on_windows_uses_the_known_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(config, "_windows_downloads_dir", lambda: tmp_path / "D-drive" / "Downloads")
+
+    assert config.default_download_root() == tmp_path / "D-drive" / "Downloads" / "Telegram"
+
+
+@pytest.mark.parametrize("failure", [None, OSError("boom")])
+def test_default_download_root_on_windows_falls_back_when_the_lookup_fails(monkeypatch, tmp_path, failure):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+
+    def lookup():
+        if failure:
+            raise failure
+        return None
+
+    monkeypatch.setattr(config, "_windows_downloads_dir", lookup)
+
+    assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
+
+
+def test_default_download_root_on_linux_honours_xdg_config_home_and_braced_home(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="${HOME}/Загрузки"\n', encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
+
+    assert config.default_download_root() == tmp_path / "Загрузки" / "Telegram"
+
+
+def test_default_download_root_on_linux_ignores_a_relative_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(config.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "user-dirs.dirs").write_text('XDG_DOWNLOAD_DIR="Загрузки"\n', encoding="utf-8")
+
+    assert config.default_download_root() == tmp_path / "Downloads" / "Telegram"
+
+
+@pytest.mark.parametrize("name", ["Загрузки, архив", "dir;name", "dir:name"])
+def test_download_defaults_skip_a_fallback_path_the_upstream_would_split(monkeypatch, tmp_path, name):
+    monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / name / "Telegram")
+
+    values = config.download_defaults()
+
+    assert "TELEGRAM_ALLOWED_ROOTS" not in values
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
+
+
+def _ensure_default_lines(config_path):
+    present = config.dotenv_values(config_path) if config_path.exists() else {}
+    config._ensure_default_lines(config_path, present)
+
+
+def test_first_start_with_downloads_enabled_writes_the_file_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", "all")
+    calls = []
+    real = config.write_values
+    monkeypatch.setattr(config, "write_values", lambda *a, **k: (calls.append(a), real(*a, **k)))
+    config_path = tmp_path / "config.env"
+
+    _ensure_default_lines(config_path)
+
+    assert len(calls) == 1
+    values = config.dotenv_values(config_path)
+    assert values["TELEGRAM_EXPOSED_TOOLS"] == config.DEFAULT_EXPOSED_TOOLS
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
+
+
+def test_ensure_download_lines_adds_the_missing_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "default_download_root", lambda: tmp_path / "dl" / "Telegram")
+    config_path = tmp_path / "config.env"
+    config_path.write_text("OTHER=1\nTELEGRAM_EXPOSED_TOOLS=read-only+download_media\n", encoding="utf-8")
+
+    _ensure_default_lines(config_path)
+
+    values = config.dotenv_values(config_path)
+    assert values["OTHER"] == "1"
+    assert values["TELEGRAM_ALLOWED_ROOTS"] == str(tmp_path / "dl" / "Telegram")
+    assert values["TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK"] == "1"
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Telegram"
+
+
+def test_ensure_download_lines_keeps_existing_keys_even_when_empty(tmp_path):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(
+        "TELEGRAM_EXPOSED_TOOLS=all\nTELEGRAM_ALLOWED_ROOTS=\nTELEGRAM_DOWNLOAD_SUBDIR=Mine\n",
+        encoding="utf-8",
+    )
+
+    _ensure_default_lines(config_path)
+
+    values = config.dotenv_values(config_path)
+    assert values["TELEGRAM_ALLOWED_ROOTS"] == ""
+    assert values["TELEGRAM_DOWNLOAD_SUBDIR"] == "Mine"
+    assert values["TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK"] == "1"
+
+
+def test_ensure_download_lines_ignores_an_unwritable_file(tmp_path, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise PermissionError("read-only file system")
+
+    monkeypatch.setattr(config, "write_values", refuse)
+    config_path = tmp_path / "config.env"
+    config_path.write_text("TELEGRAM_EXPOSED_TOOLS=all\n", encoding="utf-8")
+
+    _ensure_default_lines(config_path)  # must not raise
+
+
+@pytest.mark.parametrize("mode", ["read-only", "all-download_media", "read-only+send_message", ""])
+def test_ensure_download_lines_writes_nothing_without_download_media(tmp_path, mode):
+    config_path = tmp_path / "config.env"
+    config_path.write_text(f"TELEGRAM_EXPOSED_TOOLS={mode}\n", encoding="utf-8")
+
+    _ensure_default_lines(config_path)
+
+    assert config_path.read_text(encoding="utf-8") == f"TELEGRAM_EXPOSED_TOOLS={mode}\n"
+
+
+def test_ensure_download_lines_follows_the_environment_over_the_file(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.env"
+    config_path.write_text("TELEGRAM_EXPOSED_TOOLS=read-only\n", encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_EXPOSED_TOOLS", "all")
+
+    _ensure_default_lines(config_path)
+
+    assert "TELEGRAM_DOWNLOAD_SUBDIR" in config.dotenv_values(config_path)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("read-only", False),
+        ("read-only+download_media", True),
+        ("READ-ONLY+Download_Media", True),
+        ("read-only+send_message,download_media", True),
+        ("read-only+download_media-send_message", True),
+        ("all", True),
+        ("all-send_message", True),
+        ("all-download_media", False),
+        ("read-only+download_media-download_media", False),
+        ("read-only+send_message", False),
+        ("allx", False),
+        ("nonsense", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_download_media_enabled(mode, expected):
+    assert config.download_media_enabled(mode) is expected
 
 
 def test_write_values_creates_an_owner_only_file(tmp_path):

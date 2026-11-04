@@ -1,5 +1,8 @@
 import os
+from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from telethon.crypto import AuthKey
 from telethon.sessions import StringSession
@@ -18,9 +21,11 @@ os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "test-hash")
 os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 
+from telegram_mcp_ag.config import download_media_enabled
 from telegram_mcp_ag.server import (
     SUPPORTED_MEDIA_KINDS,
     _chunk_message_entries,
+    _drop_unusable_allowed_roots,
     _format_reset_date,
     _message_media_duration,
     _message_media_kind,
@@ -133,3 +138,78 @@ def test_quota_exhausted_message_includes_reset_date_when_known():
     message = _quota_exhausted_message(1893456000)
 
     assert "2030-01-01" in message
+
+
+# ---------------------------------------------------------------------------
+# Our reading of TELEGRAM_EXPOSED_TOOLS against upstream's
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "read-only",
+        "read-only+download_media",
+        "read-only+send_message,download_media",
+        "read-only+download_media-send_message",
+        "read-only+send_message",
+        "all",
+        "all-send_message",
+        "all-download_media",
+        "READ-ONLY+Download_Media",
+    ],
+)
+def test_download_media_enabled_agrees_with_upstream(mode):
+    from telegram_mcp import runtime
+
+    parsed = runtime._parse_exposed_tools_mode(mode)
+    exposed = (parsed.base == "all" or "download_media" in parsed.allowlist) and (
+        "download_media" not in parsed.exclusions
+    )
+
+    assert download_media_enabled(mode) is exposed
+
+
+# ---------------------------------------------------------------------------
+# Download folders that cannot be used
+# ---------------------------------------------------------------------------
+
+
+def test_usable_download_folder_stays(monkeypatch, tmp_path):
+    folder = tmp_path / "Telegram"
+    monkeypatch.setenv("TELEGRAM_ALLOWED_ROOTS", str(folder))
+
+    _drop_unusable_allowed_roots()
+
+    assert os.environ["TELEGRAM_ALLOWED_ROOTS"] == str(folder)
+    assert folder.is_dir()
+
+
+def test_folder_that_cannot_be_created_is_dropped(monkeypatch, tmp_path, capsys):
+    good, bad = tmp_path / "good", tmp_path / "bad"
+    real_mkdir = Path.mkdir
+
+    def mkdir(self, *args, **kwargs):
+        if self == bad:
+            raise PermissionError("Operation not permitted")
+        return real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_ROOTS", f"{good};{bad}")
+
+    _drop_unusable_allowed_roots()
+
+    assert os.environ["TELEGRAM_ALLOWED_ROOTS"] == str(good)
+    assert "папка для скачанных файлов недоступна" in capsys.readouterr().err
+
+
+def test_variable_is_removed_when_no_folder_is_usable(monkeypatch, tmp_path):
+    def mkdir(self, *args, **kwargs):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(Path, "mkdir", mkdir)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_ROOTS", str(tmp_path / "a"))
+
+    _drop_unusable_allowed_roots()
+
+    assert "TELEGRAM_ALLOWED_ROOTS" not in os.environ

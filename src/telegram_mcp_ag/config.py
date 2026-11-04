@@ -6,6 +6,7 @@ and exits with a raw traceback or a bare stderr message if they are missing.
 """
 
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -163,19 +164,156 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
     return True
 
 
-def _ensure_exposed_tools_line(config_path: Path) -> None:
-    """Add the read-only setting to a config that lacks it.
+DEFAULT_EXPOSED_TOOLS = "read-only"
+DOWNLOAD_SUBDIR = "Telegram"
+DOWNLOAD_TOOL = "download_media"
+_DOWNLOADS_FOLDER_ID = "{374DE290-123F-4565-9164-39C4925E467B}"
 
-    Creates the file if there is none: the login flow and hand-written files
-    don't include this line either. Having it in the file means changing the mode
-    is editing a value, not looking up a key. A value already there, even a
-    different one, is the user's decision. A file that can't be written is no
-    problem: server.py defaults to read-only anyway.
+
+def _windows_downloads_dir() -> Optional[Path]:
+    """The Downloads known folder, which the user may have moved to another drive."""
+    import ctypes
+    from ctypes import wintypes
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    folder_id = _GUID()
+    ctypes.windll.ole32.CLSIDFromString(_DOWNLOADS_FOLDER_ID, ctypes.byref(folder_id))
+    buffer = ctypes.c_wchar_p()
+    result = ctypes.windll.shell32.SHGetKnownFolderPath(
+        ctypes.byref(folder_id), 0, None, ctypes.byref(buffer)
+    )
+    try:
+        if result != 0 or not buffer.value:
+            return None
+        return Path(buffer.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(buffer)
+
+
+def _linux_downloads_dir() -> Optional[Path]:
+    """``XDG_DOWNLOAD_DIR`` from ``~/.config/user-dirs.dirs`` (``Загрузки`` in Russian)."""
+    home = Path.home()
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    config_dir = Path(config_home) if config_home and os.path.isabs(config_home) else home / ".config"
+    try:
+        text = (config_dir / "user-dirs.dirs").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("XDG_DOWNLOAD_DIR="):
+            continue
+        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+        if not value:
+            return None
+        path = Path(value.replace("${HOME}", str(home)).replace("$HOME", str(home)))
+        # A relative path would be resolved against whatever folder the client
+        # started the server in.
+        return path if path.is_absolute() else None
+    return None
+
+
+def default_download_root() -> Path:
+    """``<Downloads>/Telegram``: where files go when the client names no folder.
+
+    Does not create the folder. Any failure to locate the system Downloads
+    folder falls back to ``~/Downloads``.
     """
-    if config_path.exists() and "TELEGRAM_EXPOSED_TOOLS" in dotenv_values(config_path):
+    downloads: Optional[Path] = None
+    try:
+        if sys.platform == "win32":
+            downloads = _windows_downloads_dir()
+        elif sys.platform.startswith("linux"):
+            downloads = _linux_downloads_dir()
+    except Exception:
+        downloads = None
+    if downloads is None:
+        downloads = Path.home() / "Downloads"
+    return downloads / DOWNLOAD_SUBDIR
+
+
+def download_defaults() -> dict:
+    """The folder settings that enable ``download_media`` without client folders."""
+    values = {
+        "TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK": "1",
+        "TELEGRAM_DOWNLOAD_SUBDIR": DOWNLOAD_SUBDIR,
+    }
+    root = str(default_download_root())
+    # Upstream splits this list on ; , and : (a drive colon excepted). A path
+    # containing one would turn into a wider parent folder plus a relative one,
+    # so such a path is not offered as a fallback at all.
+    if not re.search(r"[;,]|(?<!^[A-Za-z]):", root):
+        values["TELEGRAM_ALLOWED_ROOTS"] = root
+    return values
+
+
+def download_media_enabled(mode: Optional[str]) -> bool:
+    """Whether a ``TELEGRAM_EXPOSED_TOOLS`` value leaves ``download_media`` registered.
+
+    Mirrors upstream's grammar (``all`` or ``read-only``, then ``+tool,tool`` for
+    ``read-only`` only, then ``-tool,tool``), so that the folders are set up
+    exactly when the tool exists. tests/test_server.py checks it against upstream.
+    An invalid value is "no": upstream rejects it at startup anyway.
+    """
+    value = (mode or "").strip().lower()
+    for base in ("read-only", "all"):
+        rest = value[len(base) :]
+        if value.startswith(base) and rest[:1] in ("", "+", "-"):
+            break
+    else:
+        return False
+
+    def names(text: str) -> list:
+        return [part.strip() for part in text.split(",") if part.strip()]
+
+    allowlist, exclusions = [], []
+    if rest.startswith("+"):
+        head, separator, tail = rest[1:].partition("-")
+        allowlist = names(head)
+        exclusions = names(tail) if separator else []
+    elif rest.startswith("-"):
+        exclusions = names(rest[1:])
+    if DOWNLOAD_TOOL in exclusions:
+        return False
+    return base == "all" or DOWNLOAD_TOOL in allowlist
+
+
+def _effective_exposed_tools(file_values: dict) -> str:
+    """The mode the server will run with: environment, then file, then default."""
+    for source in (os.environ.get("TELEGRAM_EXPOSED_TOOLS"), file_values.get("TELEGRAM_EXPOSED_TOOLS")):
+        if source and source.strip():
+            return source
+    return DEFAULT_EXPOSED_TOOLS
+
+
+def _ensure_default_lines(config_path: Path, present: dict) -> None:
+    """Add the settings that ``config_path`` lacks, in a single write.
+
+    ``present`` is what the file holds now. Always the exposure mode; the
+    download-folder keys only when ``download_media`` is exposed, since otherwise
+    they would only create a stray folder and a system access prompt. Creates
+    the file if there is none: the login flow and hand-written files don't
+    include these lines either. Each key is judged on its own: one already in the
+    file, even empty or with another value, is the user's decision and stays.
+    A file that can't be written is no problem: server.py applies the same
+    defaults to the environment.
+    """
+    wanted = {}
+    if "TELEGRAM_EXPOSED_TOOLS" not in present:
+        wanted["TELEGRAM_EXPOSED_TOOLS"] = DEFAULT_EXPOSED_TOOLS
+    if download_media_enabled(_effective_exposed_tools({**present, **wanted})):
+        wanted.update({k: v for k, v in download_defaults().items() if k not in present})
+    if not wanted:
         return
     try:
-        write_values({"TELEGRAM_EXPOSED_TOOLS": "read-only"}, config_path)
+        write_values(wanted, config_path)
     except OSError:
         pass
 
@@ -193,7 +331,7 @@ def load(config_path: Path = CONFIG_PATH) -> None:
     # warning about them has to be seen first.
     if config_path.exists():
         _warn_if_not_locked_down(config_path)
-    _ensure_exposed_tools_line(config_path)
+    _ensure_default_lines(config_path, dotenv_values(config_path) if config_path.exists() else {})
     if config_path.exists():
         for key, value in dotenv_values(config_path).items():
             if value is None:
