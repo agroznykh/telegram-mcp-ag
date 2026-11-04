@@ -13,11 +13,11 @@ requires-python = ">=3.14"
 license = "Apache-2.0"
 authors = [{ name = "telegram-mcp-ag maintainers" }]
 dependencies = [
-  # v3.2.90 (2026-10-19). Moved from fbb374a (2026-07-31): ~80 upstream releases.
+  # v3.3.4 (2026-10-31). Moved from 6f169ea (v3.2.90, 2026-10-19).
   # Must stay git+https, not an archive URL: upstream's install_guard refuses to
   # start unless the installer recorded a git or file source. The installers read
   # the SHA from this line and install from a downloaded copy, so users need no git.
-  "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@6f169eacdd5582a291061ae15b4829029666f53c",
+  "telegram-mcp @ git+https://github.com/chigwell/telegram-mcp.git@0246df8c3c99818d68f50e8591b2d3dda8363f81",
   # mcp 2.0.0 dropped mcp.server.fastmcp (FastMCP/Context), which the upstream
   # runtime imports directly, breaking every fresh install. Upstream itself now
   # requires mcp>=1.30,<2; the cap is repeated here so it survives if they relax it.
