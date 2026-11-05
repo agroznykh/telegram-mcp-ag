@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "test-hash")
 os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 
+from telegram_mcp_ag import server
 from telegram_mcp_ag.config import download_media_enabled
 from telegram_mcp_ag.server import (
     SUPPORTED_MEDIA_KINDS,
@@ -213,6 +215,80 @@ def test_variable_is_removed_when_no_folder_is_usable(monkeypatch, tmp_path):
     _drop_unusable_allowed_roots()
 
     assert "TELEGRAM_ALLOWED_ROOTS" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# download_media: media_id accepted as a string
+# ---------------------------------------------------------------------------
+
+
+def _capture_upstream_download(monkeypatch, answer="Media downloaded to /x."):
+    calls = []
+
+    async def upstream(**kwargs):
+        calls.append(kwargs)
+        return answer
+
+    monkeypatch.setattr(server, "_upstream_download_media", upstream)
+    return calls
+
+
+def test_download_media_takes_a_large_media_id_as_a_string(monkeypatch):
+    calls = _capture_upstream_download(monkeypatch)
+
+    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="4996884764574090643"))
+
+    assert calls[0]["media_id"] == 4996884764574090643
+    assert (calls[0]["chat_id"], calls[0]["message_id"]) == (5, 7)
+
+
+@pytest.mark.parametrize("quoted", ['"4996884764574090643"', "'4996884764574090643'", ' "4996884764574090643" '])
+def test_download_media_drops_quotes_around_the_media_id(monkeypatch, quoted):
+    calls = _capture_upstream_download(monkeypatch)
+
+    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=quoted))
+
+    assert calls[0]["media_id"] == 4996884764574090643
+
+
+def test_download_media_passes_an_integer_or_no_media_id_through(monkeypatch):
+    calls = _capture_upstream_download(monkeypatch)
+
+    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=12))
+    asyncio.run(server.download_media(chat_id=5, message_id=7))
+
+    assert [c["media_id"] for c in calls] == [12, None]
+
+
+def test_download_media_rejects_a_media_id_that_is_not_a_number(monkeypatch):
+    calls = _capture_upstream_download(monkeypatch)
+
+    result = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="photo"))
+
+    assert "media_id must be a number" in result
+    assert calls == []
+
+
+def test_download_media_hints_at_rounding_only_for_a_large_integer(monkeypatch):
+    _capture_upstream_download(monkeypatch, answer="No rich media with id 1 in message 7.")
+
+    rounded = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=4996884764574090000))
+    small = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=12))
+    as_text = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="4996884764574090643"))
+
+    assert "pass it as a string" in rounded
+    assert "pass it as a string" not in small
+    assert "pass it as a string" not in as_text
+
+
+def test_download_media_keeps_upstream_annotations_and_takes_media_id_as_text():
+    tool = server.mcp._tool_manager._tools["download_media"]
+    media_id = tool.parameters["properties"]["media_id"]
+
+    assert tool.annotations == server._upstream_download_tool.annotations
+    assert {"type": "string"} in media_id["anyOf"]
+    assert "ctx" not in tool.parameters["properties"]
+    assert tool.context_kwarg == "ctx"
 
 
 def test_handshake_reports_this_package_version():

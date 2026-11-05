@@ -279,6 +279,58 @@ def test_rows_continue_across_rich_blocks_and_keyboard():
     ]
 
 
+def _text_button(text):
+    return types.TextButton(text=types.TextPlain(text), type=types.InlineButtonTypeCallback(data=text.encode()))
+
+
+def _cell(text):
+    return types.PageTableCell(text=text)
+
+
+def _board(*rows):
+    """A table whose cells are plain text or text buttons -- like a chess board."""
+    return types.PageBlockTable(
+        title=types.TextEmpty(),
+        rows=[types.PageTableRow(cells=[_cell(c) for c in row]) for row in rows],
+    )
+
+
+def test_text_buttons_in_a_table_make_a_row_per_table_row():
+    board = _board(
+        [types.TextPlain("a"), types.TextPlain("b")],  # header: no buttons, takes no row
+        [types.TextPlain("1"), _text_button("a1"), _text_button("b1")],
+        [types.TextPlain("2"), _text_button("a2"), _text_button("b2")],
+    )
+    message = _message(_rich(board, _row(_button("Undo"))))
+
+    assert _positions(message) == [
+        ("a1", 0, 0),
+        ("b1", 0, 1),
+        ("a2", 1, 0),
+        ("b2", 1, 1),
+        ("Undo", 2, 0),
+    ]
+
+
+def test_text_buttons_in_a_paragraph_make_one_row():
+    paragraph = types.PageBlockParagraph(
+        text=types.TextConcat(texts=[types.TextPlain("Pick: "), _text_button("x"), _text_button("y")])
+    )
+    message = _message(_rich(_row(_button("top")), paragraph))
+
+    assert _positions(message) == [("top", 0, 0), ("x", 1, 0), ("y", 1, 1)]
+
+
+def test_a_text_button_is_found_and_pressed(client):
+    client.messages = [_message(_rich(_board([_text_button("e2"), _text_button("e4")])))]
+
+    listed = _listed(_run(rich_buttons.list_inline_buttons(chat_id=1)))
+    _run(rich_buttons.press_inline_button(chat_id=5, button_text="e4"))
+
+    assert [b["text"] for b in listed["results"]] == ["e2", "e4"]
+    assert _pressed(client)[0].data == b"e4"
+
+
 # ---------------------------------------------------------------------------
 # list_inline_buttons
 # ---------------------------------------------------------------------------
@@ -537,6 +589,31 @@ def test_button_text_as_shown_by_the_tools_is_accepted(client):
     _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text=shown))
 
     assert [r.data for r in _pressed(client)] == [zero_width.encode(), long_label.encode()]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "\U0001f504 Undo",  # no-break space: the listing shows a plain space
+        "\U0001f504️ Undo",  # emoji variation selector: invisible in the listing
+        "\U0001f504  Undo",  # doubled space
+    ],
+)
+def test_press_by_text_ignores_characters_the_listing_does_not_show(client, label):
+    client.messages = [_message(_rich(_row(_button("Flip"), _button(label))))]
+
+    result = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="\U0001f504 undo"))
+
+    assert "Button not found" not in result
+    assert _pressed(client)[0].data == label.encode()
+
+
+def test_press_by_text_still_tells_different_labels_apart(client):
+    client.messages = [_message(_rich(_row(_button("\U0001f504 Undo"), _button("\U0001f504 Redo"))))]
+
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="\U0001f504 redo"))
+
+    assert _pressed(client)[0].data == "\U0001f504 Redo".encode()
 
 
 def test_old_layer_callback_with_password_is_not_pressable():
