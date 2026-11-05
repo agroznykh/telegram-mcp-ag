@@ -175,6 +175,11 @@ from telegram_mcp.runtime import (
 # the buttons of rich messages. Imported here so it lands before the exposure
 # mode prunes the tool set.
 from telegram_mcp_ag import rich_buttons as _rich_buttons  # noqa: E402,F401
+from telegram_mcp_ag import __version__ as _VERSION  # noqa: E402
+
+# serverInfo.version of the MCP handshake. Upstream does not set one, and the SDK
+# then reports its own version (mcp 1.x) instead of this package's.
+mcp._mcp_server.version = _VERSION
 
 
 def _install_login_client() -> None:

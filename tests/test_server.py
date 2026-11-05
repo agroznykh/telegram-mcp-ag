@@ -213,3 +213,12 @@ def test_variable_is_removed_when_no_folder_is_usable(monkeypatch, tmp_path):
     _drop_unusable_allowed_roots()
 
     assert "TELEGRAM_ALLOWED_ROOTS" not in os.environ
+
+
+def test_handshake_reports_this_package_version():
+    import telegram_mcp_ag
+    from telegram_mcp_ag import server
+
+    options = server.mcp._mcp_server.create_initialization_options()
+
+    assert options.server_version == telegram_mcp_ag.__version__

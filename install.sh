@@ -237,8 +237,22 @@ _fetch_upstream() {
     mv "$partial" "$UPSTREAM_SOURCE"
 }
 
+# Version of the package about to be installed, from pyproject.toml of $REPO_REF;
+# empty if it cannot be read (the install itself does not depend on it).
+_ref_version() {
+    curl -fsSL "$REPO_RAW_BASE/$REPO_REF/pyproject.toml" 2>/dev/null |
+        sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1 || true
+}
+
+# Version of the package installed in the venv; empty if it cannot be read.
+_installed_version() {
+    "$VENV_DIR/bin/python" -c 'import telegram_mcp_ag; print(telegram_mcp_ag.__version__)' 2>/dev/null || true
+}
+
 install_package() {
-    info "Устанавливаю telegram-mcp-ag (ref: $REPO_REF)..."
+    local version=""
+    version="$(_ref_version)"
+    info "Устанавливаю telegram-mcp-ag${version:+ $version} (ref: $REPO_REF)..."
     local package_url="$REPO_ARCHIVE_BASE/$REPO_REF.tar.gz"
     # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
     # same version string across SHAs, so a plain install on an existing venv
@@ -250,7 +264,8 @@ install_package() {
         "$("$VENV_DIR/bin/python" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "$UPSTREAM_SOURCE")" >"$overrides"
     uv pip install -q --python "$VENV_DIR/bin/python" --reinstall --overrides "$overrides" "$package_url"
     rm -f "$overrides"
-    ok "Пакет установлен."
+    version="$(_installed_version)"
+    ok "Пакет telegram-mcp-ag${version:+ $version} установлен."
 }
 
 # The venv rebuild is confirmed good at this point (setup_python_and_venv()
@@ -758,8 +773,10 @@ package_dir = os.path.dirname(os.path.abspath(telegram_mcp.__file__))
 print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
 ' 2>/dev/null || true)"
 
+    local version=""
+    version="$(_installed_version)"
     echo
-    ok "Готово! telegram-mcp-ag установлен."
+    ok "Готово! telegram-mcp-ag${version:+ $version} установлен."
     echo
     echo "Что дальше:"
     echo "  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты."
