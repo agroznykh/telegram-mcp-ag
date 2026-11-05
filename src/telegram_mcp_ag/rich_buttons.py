@@ -12,6 +12,7 @@ passed through as the raw flags (``bg_success``, ...). What a style means -- say
 "this option is selected" -- is for the caller to decide.
 """
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional, Union
 
@@ -360,14 +361,31 @@ async def _find_message(cl, entity, message_id: Optional[int], limit: int):
     return await _full_rich_message(cl, entity, found)
 
 
+def _match_key(text: str) -> str:
+    """A button text reduced to what a reader sees, for comparison only.
+
+    Bots put characters into labels that the listing shows as nothing or as a
+    plain space -- a no-break space, an emoji variation selector (U+FE0F), a
+    zero-width joiner. A caller copying the label from the listing does not
+    reproduce them, so they are dropped on both sides before comparing.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(
+        ch for ch in text if not ("︀" <= ch <= "️") and unicodedata.category(ch) != "Cf"
+    )
+    return " ".join(text.split()).casefold()
+
+
 def _names(button: ButtonInfo) -> set:
     """Texts a caller may use for a button: as sent, and as the tools show it."""
-    shown = (button.text or "<no text>").strip().lower()
     return {
-        button.text.strip().lower(),
-        _text(button.text).strip().lower(),
-        _text(button.text, 64).strip().lower(),
-        shown,
+        _match_key(name)
+        for name in (
+            button.text or "",
+            _text(button.text),
+            _text(button.text, 64),
+            button.text or "<no text>",
+        )
     }
 
 
@@ -501,7 +519,7 @@ async def press_inline_button(
 
         chosen = None
         if button_text:
-            wanted = button_text.strip().lower()
+            wanted = _match_key(button_text)
             # The listing shows the cleaned, cut text: accept it as well as the raw one.
             chosen = next((b for b in buttons if wanted in _names(b)), None)
         if chosen is None and button_index is not None:

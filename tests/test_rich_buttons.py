@@ -539,6 +539,31 @@ def test_button_text_as_shown_by_the_tools_is_accepted(client):
     assert [r.data for r in _pressed(client)] == [zero_width.encode(), long_label.encode()]
 
 
+@pytest.mark.parametrize(
+    "label",
+    [
+        "\U0001f504 Undo",  # no-break space: the listing shows a plain space
+        "\U0001f504️ Undo",  # emoji variation selector: invisible in the listing
+        "\U0001f504  Undo",  # doubled space
+    ],
+)
+def test_press_by_text_ignores_characters_the_listing_does_not_show(client, label):
+    client.messages = [_message(_rich(_row(_button("Flip"), _button(label))))]
+
+    result = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="\U0001f504 undo"))
+
+    assert "Button not found" not in result
+    assert _pressed(client)[0].data == label.encode()
+
+
+def test_press_by_text_still_tells_different_labels_apart(client):
+    client.messages = [_message(_rich(_row(_button("\U0001f504 Undo"), _button("\U0001f504 Redo"))))]
+
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="\U0001f504 redo"))
+
+    assert _pressed(client)[0].data == "\U0001f504 Redo".encode()
+
+
 def test_old_layer_callback_with_password_is_not_pressable():
     legacy = SimpleNamespace(text="p", data=b"x", url=None, requires_password=True)
     markup = types.ReplyInlineMarkup(rows=[SimpleNamespace(buttons=[legacy])])
