@@ -95,6 +95,9 @@ $VenvBackupDir = Join-Path $InstallDir '.venv.bak'
 # See Get-UpstreamSource. $script:UpstreamSource stays empty on the pip fallback path.
 $UpstreamBaseDir = Join-Path $InstallDir 'upstream'
 $script:UpstreamSource = $null
+# Filled by Get-RefPyproject and Install-ServerPackage; see there.
+$script:RefPyproject = $null
+$script:InstalledVersion = ''
 $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
@@ -214,13 +217,8 @@ function Get-VenvLoginExe { Join-Path $VenvDir 'Scripts\telegram-mcp-ag-login.ex
 # release's own pyproject.toml, the one place it is pinned.
 function Get-UpstreamSource {
     $sha = $null
-    try {
-        $pyproject = Invoke-RestMethod -Uri "$RepoRawBase/$RepoRef/pyproject.toml" -ErrorAction Stop
-        $match = [regex]::Match($pyproject, 'chigwell/telegram-mcp\.git@([0-9a-f]{40})')
-        if ($match.Success) { $sha = $match.Groups[1].Value }
-    } catch {
-        Write-Verbose "Could not read pyproject.toml: $($_.Exception.Message)"
-    }
+    $match = [regex]::Match((Get-RefPyproject), 'chigwell/telegram-mcp\.git@([0-9a-f]{40})')
+    if ($match.Success) { $sha = $match.Groups[1].Value }
     if (-not $sha) {
         Write-Failure 'Не удалось узнать, какую версию компонентов скачивать. Проверьте интернет и запустите установщик ещё раз.'
         exit 1
@@ -254,8 +252,49 @@ function Get-UpstreamSource {
     Remove-Item -Recurse -Force $partial
 }
 
+# pyproject.toml of $RepoRef, downloaded once: it gives both the version shown
+# to the user and the upstream SHA. '' if the download fails or stalls.
+function Get-RefPyproject {
+    if ($null -eq $script:RefPyproject) {
+        try {
+            $script:RefPyproject = [string](Invoke-RestMethod -Uri "$RepoRawBase/$RepoRef/pyproject.toml" -TimeoutSec 30 -ErrorAction Stop)
+        } catch {
+            Write-Verbose "Could not read pyproject.toml: $($_.Exception.Message)"
+            $script:RefPyproject = ''
+        }
+    }
+    return $script:RefPyproject
+}
+
+# Version of the package about to be installed; empty if it cannot be read
+# (the install itself does not depend on it).
+function Get-RefVersion {
+    $match = [regex]::Match((Get-RefPyproject), '(?m)^version\s*=\s*"([^"]+)"')
+    if ($match.Success) { return $match.Groups[1].Value }
+    return ''
+}
+
+# Version of the package installed in the venv; empty if it cannot be read.
+function Get-InstalledVersion {
+    try {
+        $py = Get-VenvPython
+        $version = (& $py -c 'import telegram_mcp_ag; print(telegram_mcp_ag.__version__)' 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0) { return $version }
+    } catch {
+        Write-Verbose "Could not read the installed version: $($_.Exception.Message)"
+    }
+    return ''
+}
+
+# " 0.4.1" for a known version, "" otherwise -- to splice into a message.
+function Format-Version {
+    param([string]$Version)
+    if ($Version) { return " $Version" }
+    return ''
+}
+
 function Install-ServerPackage {
-    Write-Info "Устанавливаю telegram-mcp-ag (ref: $RepoRef)..."
+    Write-Info "Устанавливаю telegram-mcp-ag$(Format-Version (Get-RefVersion)) (ref: $RepoRef)..."
     $py = Get-VenvPython
     $packageUrl = "$RepoArchiveBase/$RepoRef.tar.gz"
     # Reinstalling: the upstream telegram-mcp is pinned by SHA but keeps the
@@ -272,7 +311,8 @@ function Install-ServerPackage {
         Write-Failure 'Не удалось установить пакет.'
         exit 1
     }
-    Write-Ok 'Пакет установлен.'
+    $script:InstalledVersion = Get-InstalledVersion
+    Write-Ok "Пакет telegram-mcp-ag$(Format-Version $script:InstalledVersion) установлен."
 }
 
 # The venv rebuild is confirmed good at this point (Initialize-PythonAndVenv
@@ -911,7 +951,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     }
 
     Write-Host ''
-    Write-Ok 'Готово! telegram-mcp-ag установлен.'
+    Write-Ok "Готово! telegram-mcp-ag$(Format-Version $script:InstalledVersion) установлен."
     Write-Host ''
     Write-Host 'Что дальше:'
     Write-Host '  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты.'

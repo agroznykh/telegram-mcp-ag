@@ -1,5 +1,7 @@
 import asyncio
+import inspect
 import os
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +24,7 @@ os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "test-hash")
 os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 
+import telegram_mcp_ag
 from telegram_mcp_ag import server
 from telegram_mcp_ag.config import download_media_enabled
 from telegram_mcp_ag.server import (
@@ -260,6 +263,15 @@ def test_download_media_passes_an_integer_or_no_media_id_through(monkeypatch):
     assert [c["media_id"] for c in calls] == [12, None]
 
 
+@pytest.mark.parametrize("blank", ["", "   ", '""'])
+def test_download_media_treats_a_blank_media_id_as_not_given(monkeypatch, blank):
+    calls = _capture_upstream_download(monkeypatch)
+
+    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=blank))
+
+    assert calls[0]["media_id"] is None
+
+
 def test_download_media_rejects_a_media_id_that_is_not_a_number(monkeypatch):
     calls = _capture_upstream_download(monkeypatch)
 
@@ -269,23 +281,50 @@ def test_download_media_rejects_a_media_id_that_is_not_a_number(monkeypatch):
     assert calls == []
 
 
-def test_download_media_hints_at_rounding_only_for_a_large_integer(monkeypatch):
-    _capture_upstream_download(monkeypatch, answer="No rich media with id 1 in message 7.")
-
-    rounded = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=4996884764574090000))
-    small = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=12))
-    as_text = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="4996884764574090643"))
-
-    assert "pass it as a string" in rounded
-    assert "pass it as a string" not in small
-    assert "pass it as a string" not in as_text
+def _download_tool():
+    return server.mcp._tool_manager._tools["download_media"]
 
 
-def test_download_media_keeps_upstream_annotations_and_takes_media_id_as_text():
-    tool = server.mcp._tool_manager._tools["download_media"]
-    media_id = tool.parameters["properties"]["media_id"]
+def test_download_media_schema_offers_media_id_only_as_text():
+    # An integer in the schema is what lets a JavaScript client round the id.
+    media_id = _download_tool().parameters["properties"]["media_id"]
 
-    assert tool.annotations == server._upstream_download_tool.annotations
-    assert {"type": "string"} in media_id["anyOf"]
+    assert {option.get("type") for option in media_id["anyOf"]} == {"string", "null"}
+
+
+def test_download_media_still_accepts_an_exact_integer_from_a_client():
+    arguments = _download_tool().fn_metadata.arg_model.model_validate(
+        {"chat_id": 5, "message_id": 7, "media_id": 4996884764574090643}
+    )
+
+    assert arguments.media_id == "4996884764574090643"
+
+
+def test_download_media_takes_the_same_arguments_as_upstream():
+    # A pin bump that renames or adds a parameter of upstream's download_media must
+    # fail here, not as a TypeError on every call.
+    ours = set(inspect.signature(server.download_media).parameters)
+    upstream = set(inspect.signature(server._upstream_download_media).parameters)
+
+    assert ours == upstream
+
+
+def test_download_media_keeps_upstream_annotations_and_context():
+    tool = _download_tool()
+
+    assert tool.annotations is not None and not tool.annotations.readOnlyHint  # it writes files
     assert "ctx" not in tool.parameters["properties"]
     assert tool.context_kwarg == "ctx"
+
+
+def test_handshake_reports_this_package_version():
+    options = server.mcp._mcp_server.create_initialization_options()
+
+    assert options.server_version == telegram_mcp_ag.__version__
+
+
+def test_package_version_matches_pyproject():
+    # The installers show the pyproject version before installing and __version__ after.
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["version"] == telegram_mcp_ag.__version__

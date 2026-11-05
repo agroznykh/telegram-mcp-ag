@@ -321,6 +321,21 @@ def test_text_buttons_in_a_paragraph_make_one_row():
     assert _positions(message) == [("top", 0, 0), ("x", 1, 0), ("y", 1, 1)]
 
 
+def test_a_details_title_comes_before_its_body():
+    details = types.PageBlockDetails(
+        blocks=[types.PageBlockParagraph(text=_text_button("inside"))],
+        title=_text_button("summary"),
+    )
+
+    assert _positions(_message(_rich(details))) == [("summary", 0, 0), ("inside", 1, 0)]
+
+
+def test_two_buttons_in_one_cell_take_two_columns():
+    board = _board([types.TextConcat(texts=[_text_button("<"), _text_button(">")]), _text_button("x")])
+
+    assert _positions(_message(_rich(board))) == [("<", 0, 0), (">", 0, 1), ("x", 0, 2)]
+
+
 def test_a_text_button_is_found_and_pressed(client):
     client.messages = [_message(_rich(_board([_text_button("e2"), _text_button("e4")])))]
 
@@ -594,8 +609,9 @@ def test_button_text_as_shown_by_the_tools_is_accepted(client):
 @pytest.mark.parametrize(
     "label",
     [
-        "\U0001f504 Undo",  # no-break space: the listing shows a plain space
-        "\U0001f504️ Undo",  # emoji variation selector: invisible in the listing
+        "\U0001f504" + chr(0x00A0) + "Undo",  # no-break space: the listing shows a plain space
+        "\U0001f504" + chr(0xFE0F) + " Undo",  # emoji variation selector: invisible in the listing
+        "\U0001f504" + chr(0x200D) + " Undo",  # zero-width joiner: invisible too
         "\U0001f504  Undo",  # doubled space
     ],
 )
@@ -615,6 +631,42 @@ def test_press_by_text_still_tells_different_labels_apart(client):
 
     assert _pressed(client)[0].data == "\U0001f504 Redo".encode()
 
+
+@pytest.mark.parametrize("pressed, other", [("2", "²"), ("i", "ℹ"), ("ss", "ß")])
+def test_press_by_text_does_not_fold_lookalike_labels(client, pressed, other):
+    client.messages = [_message(_rich(_row(_button(other), _button(pressed))))]
+
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text=pressed))
+
+    assert _pressed(client)[0].data == pressed.encode()
+
+
+def test_press_by_a_shared_label_asks_for_the_index(client):
+    client.messages = [_message(_rich(_board([_text_button("p"), _text_button("x"), _text_button("p")])))]
+
+    result = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="p"))
+
+    assert "Several buttons have this text (indices 0, 2)" in result
+    assert _pressed(client) == []
+
+
+def test_index_decides_when_text_and_index_are_both_given(client):
+    pawn_a = _button("p", types.InlineButtonTypeCallback(data=b"a2"))
+    pawn_b = _button("p", types.InlineButtonTypeCallback(data=b"b2"))
+    client.messages = [_message(_rich(_row(pawn_a, _button("x"), pawn_b)))]
+
+    _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="p", button_index=2))
+
+    assert [r.data for r in _pressed(client)] == [b"b2"]
+
+
+def test_text_that_disagrees_with_the_index_presses_nothing(client):
+    client.messages = [_message(_rich(_row(_button("Yes"), _button("No"))))]
+
+    result = _run(rich_buttons.press_inline_button(chat_id=5, message_id=7, button_text="Yes", button_index=1))
+
+    assert "button_index 1 is 'No', not 'Yes'" in result
+    assert _pressed(client) == []
 
 def test_old_layer_callback_with_password_is_not_pressable():
     legacy = SimpleNamespace(text="p", data=b"x", url=None, requires_password=True)
