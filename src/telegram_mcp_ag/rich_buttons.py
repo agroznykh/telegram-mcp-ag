@@ -12,6 +12,7 @@ passed through as the raw flags (``bg_success``, ...). What a style means -- say
 "this option is selected" -- is for the caller to decide.
 """
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Iterator, List, Optional, Union
 
@@ -37,8 +38,10 @@ from telethon.tl.types import (
     InlineButtonTypeWebView,
     PageBlockButtonRow,
     PageButton,
+    PageTableRow,
     ReplyInlineMarkup,
     ReplyKeyboardMarkup,
+    TextButton,
 )
 
 from telegram_mcp import runtime as _runtime
@@ -131,10 +134,30 @@ class Keyboard:
     markup: Any = None
 
 
-def _walk_button_rows(node: Any) -> Iterator[List[PageButton]]:
+def _is_rich_text(node: Any) -> bool:
+    return getattr(node, "SUBCLASS_OF_ID", None) == TextButton.SUBCLASS_OF_ID
+
+
+def _text_buttons(node: Any) -> Iterator[TextButton]:
+    """``TextButton`` objects inside a piece of rich text or a table cell, in text order."""
+    if isinstance(node, TextButton):
+        yield node
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _text_buttons(item)
+    elif isinstance(node, TLObject):
+        for value in vars(node).values():
+            if isinstance(value, (list, tuple, TLObject)):
+                yield from _text_buttons(value)
+
+
+def _walk_button_rows(node: Any) -> Iterator[List[Any]]:
     """Rows of rich buttons, depth-first, in the order the blocks appear on screen.
 
     A ``PageBlockButtonRow`` is one row; a ``PageButton`` outside one is a row of its own.
+    Buttons inside text (``TextButton`` -- e.g. the squares of a board drawn as a table)
+    make a row per table row, and a row per piece of text elsewhere (a paragraph, a
+    caption); ``col`` is then the position among that row's buttons, not the table column.
     """
     if isinstance(node, (list, tuple)):
         for item in node:
@@ -145,6 +168,10 @@ def _walk_button_rows(node: Any) -> Iterator[List[PageButton]]:
             yield row
     elif isinstance(node, PageButton):
         yield [node]
+    elif isinstance(node, PageTableRow) or _is_rich_text(node):
+        row = list(_text_buttons(node))
+        if row:
+            yield row
     elif isinstance(node, TLObject):
         for value in vars(node).values():
             if isinstance(value, (list, tuple, TLObject)):
@@ -155,8 +182,8 @@ def _rich_blocks(message):
     return getattr(getattr(message, "rich_message", None), "blocks", None) or []
 
 
-def collect_page_button_rows(message) -> List[List[PageButton]]:
-    """Every row of rich buttons of a message, nested blocks included."""
+def collect_page_button_rows(message) -> List[List[Any]]:
+    """Every row of rich buttons (``PageButton`` / ``TextButton``), nested blocks included."""
     return list(_walk_button_rows(_rich_blocks(message)))
 
 
@@ -360,14 +387,31 @@ async def _find_message(cl, entity, message_id: Optional[int], limit: int):
     return await _full_rich_message(cl, entity, found)
 
 
+def _match_key(text: str) -> str:
+    """A button text reduced to what a reader sees, for comparison only.
+
+    Bots put characters into labels that the listing shows as nothing or as a
+    plain space -- a no-break space, an emoji variation selector (U+FE0F), a
+    zero-width joiner. A caller copying the label from the listing does not
+    reproduce them, so they are dropped on both sides before comparing.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(
+        ch for ch in text if not ("︀" <= ch <= "️") and unicodedata.category(ch) != "Cf"
+    )
+    return " ".join(text.split()).casefold()
+
+
 def _names(button: ButtonInfo) -> set:
     """Texts a caller may use for a button: as sent, and as the tools show it."""
-    shown = (button.text or "<no text>").strip().lower()
     return {
-        button.text.strip().lower(),
-        _text(button.text).strip().lower(),
-        _text(button.text, 64).strip().lower(),
-        shown,
+        _match_key(name)
+        for name in (
+            button.text or "",
+            _text(button.text),
+            _text(button.text, 64),
+            button.text or "<no text>",
+        )
     }
 
 
@@ -394,8 +438,11 @@ async def list_inline_buttons(
     """
     List a message's buttons: inline keyboards, reply keyboards (the bot's menu
     in place of the input field) and the buttons of rich messages, in one
-    numbering. Each button has index (the one press_inline_button takes), row and
-    col (zero-based position on screen; rich-message rows come first), text and
+    numbering. Rich-message buttons include those inside text: in a table (a game
+    board, a calendar) each table row is one row of buttons and col counts only
+    the cells that are buttons. Each button has index (the one press_inline_button
+    takes), row and col (zero-based position on screen; rich-message rows come
+    first), text and
     kind, which says what pressing does: callback, game, url, url_auth, web_view,
     web_app, copy, switch_inline, buy, user_profile, disabled, text (reply
     keyboard), request_phone, request_location, request_poll, request_peer, or
@@ -501,7 +548,7 @@ async def press_inline_button(
 
         chosen = None
         if button_text:
-            wanted = button_text.strip().lower()
+            wanted = _match_key(button_text)
             # The listing shows the cleaned, cut text: accept it as well as the raw one.
             chosen = next((b for b in buttons if wanted in _names(b)), None)
         if chosen is None and button_index is not None:
