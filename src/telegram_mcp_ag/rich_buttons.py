@@ -38,8 +38,10 @@ from telethon.tl.types import (
     InlineButtonTypeWebView,
     PageBlockButtonRow,
     PageButton,
+    PageTableRow,
     ReplyInlineMarkup,
     ReplyKeyboardMarkup,
+    TextButton,
 )
 
 from telegram_mcp import runtime as _runtime
@@ -132,10 +134,30 @@ class Keyboard:
     markup: Any = None
 
 
-def _walk_button_rows(node: Any) -> Iterator[List[PageButton]]:
+def _is_rich_text(node: Any) -> bool:
+    return getattr(node, "SUBCLASS_OF_ID", None) == TextButton.SUBCLASS_OF_ID
+
+
+def _text_buttons(node: Any) -> Iterator[TextButton]:
+    """``TextButton`` objects inside a piece of rich text or a table cell, in text order."""
+    if isinstance(node, TextButton):
+        yield node
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            yield from _text_buttons(item)
+    elif isinstance(node, TLObject):
+        for value in vars(node).values():
+            if isinstance(value, (list, tuple, TLObject)):
+                yield from _text_buttons(value)
+
+
+def _walk_button_rows(node: Any) -> Iterator[List[Any]]:
     """Rows of rich buttons, depth-first, in the order the blocks appear on screen.
 
     A ``PageBlockButtonRow`` is one row; a ``PageButton`` outside one is a row of its own.
+    Buttons inside text (``TextButton`` -- e.g. the squares of a board drawn as a table)
+    make a row per table row, and a row per piece of text elsewhere (a paragraph, a
+    caption); ``col`` is then the position among that row's buttons, not the table column.
     """
     if isinstance(node, (list, tuple)):
         for item in node:
@@ -146,6 +168,10 @@ def _walk_button_rows(node: Any) -> Iterator[List[PageButton]]:
             yield row
     elif isinstance(node, PageButton):
         yield [node]
+    elif isinstance(node, PageTableRow) or _is_rich_text(node):
+        row = list(_text_buttons(node))
+        if row:
+            yield row
     elif isinstance(node, TLObject):
         for value in vars(node).values():
             if isinstance(value, (list, tuple, TLObject)):
@@ -156,8 +182,8 @@ def _rich_blocks(message):
     return getattr(getattr(message, "rich_message", None), "blocks", None) or []
 
 
-def collect_page_button_rows(message) -> List[List[PageButton]]:
-    """Every row of rich buttons of a message, nested blocks included."""
+def collect_page_button_rows(message) -> List[List[Any]]:
+    """Every row of rich buttons (``PageButton`` / ``TextButton``), nested blocks included."""
     return list(_walk_button_rows(_rich_blocks(message)))
 
 
@@ -412,8 +438,11 @@ async def list_inline_buttons(
     """
     List a message's buttons: inline keyboards, reply keyboards (the bot's menu
     in place of the input field) and the buttons of rich messages, in one
-    numbering. Each button has index (the one press_inline_button takes), row and
-    col (zero-based position on screen; rich-message rows come first), text and
+    numbering. Rich-message buttons include those inside text: in a table (a game
+    board, a calendar) each table row is one row of buttons and col counts only
+    the cells that are buttons. Each button has index (the one press_inline_button
+    takes), row and col (zero-based position on screen; rich-message rows come
+    first), text and
     kind, which says what pressing does: callback, game, url, url_auth, web_view,
     web_app, copy, switch_inline, buy, user_profile, disabled, text (reply
     keyboard), request_phone, request_location, request_poll, request_peer, or

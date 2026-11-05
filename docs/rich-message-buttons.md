@@ -28,6 +28,10 @@ message.rich_message              # RichMessage(blocks, photos, documents, rtl, 
 
 - Кнопки собираются рекурсивно из `rich_message.blocks` в экранном порядке, затем идут
   кнопки обычной клавиатуры. Нумерация сквозная, индекс из списка подходит для нажатия.
+- Кроме `PageButton` собираются кнопки внутри текста (`TextButton`), например клетки
+  шахматной доски в таблице. Строка таблицы — одна строка кнопок, в другом месте — одна
+  строка на текст блока (абзац, подпись). `col` считает только клетки-кнопки, не столбцы
+  таблицы; строка без кнопок номера не занимает.
 - `list_inline_buttons` отдаёт: `index`, `row`, `col` (с нуля; строки rich-блоков идут первыми),
   `text`, `kind` (`callback`, `game`, `url`, `url_auth`, `web_view`, `web_app`, `copy`,
   `switch_inline`, `buy`, `user_profile`, `disabled`, `text`, `request_phone`,
