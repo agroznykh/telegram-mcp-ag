@@ -242,6 +242,15 @@ def test_download_media_takes_a_large_media_id_as_a_string(monkeypatch):
     assert (calls[0]["chat_id"], calls[0]["message_id"]) == (5, 7)
 
 
+@pytest.mark.parametrize("quoted", ['"4996884764574090643"', "'4996884764574090643'", ' "4996884764574090643" '])
+def test_download_media_drops_quotes_around_the_media_id(monkeypatch, quoted):
+    calls = _capture_upstream_download(monkeypatch)
+
+    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=quoted))
+
+    assert calls[0]["media_id"] == 4996884764574090643
+
+
 def test_download_media_passes_an_integer_or_no_media_id_through(monkeypatch):
     calls = _capture_upstream_download(monkeypatch)
 

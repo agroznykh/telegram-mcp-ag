@@ -191,11 +191,15 @@ mcp._tool_manager.remove_tool(_DOWNLOAD_MEDIA)
 
 
 def _media_id_arg(value: Union[int, str, None]):
-    """``(media_id, error)``: an id given as digits in a string becomes an int."""
+    """``(media_id, error)``: an id given as digits in a string becomes an int.
+
+    Quotes around the digits are dropped: Claude Code turns bare digits into a
+    (rounded) number, and a quoted value reaches the server with its quotes.
+    """
     if not isinstance(value, str):
         return value, None
     try:
-        return int(value.strip()), None
+        return int(value.strip().strip("\"'").strip()), None
     except ValueError:
         return None, "media_id must be a number: pass the id exactly as in rich_media."
 
