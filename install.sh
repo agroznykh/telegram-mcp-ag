@@ -35,6 +35,9 @@ VENV_BACKUP_DIR="$VENV_DIR.bak"
 # See _fetch_upstream(). UPSTREAM_SOURCE stays empty on the pip fallback path.
 UPSTREAM_BASE_DIR="$INSTALL_DIR/upstream"
 UPSTREAM_SOURCE=""
+# Filled by _ref_pyproject() and install_package(); see there.
+REF_PYPROJECT=""
+INSTALLED_VERSION=""
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
@@ -216,7 +219,8 @@ setup_python_and_venv() {
 # release's own pyproject.toml, the one place it is pinned.
 _fetch_upstream() {
     local sha=""
-    sha="$(curl -fsSL "$REPO_RAW_BASE/$REPO_REF/pyproject.toml" | grep -oE 'chigwell/telegram-mcp\.git@[0-9a-f]{40}' | head -1 | cut -d@ -f2)" || true
+    _ref_pyproject
+    sha="$(printf '%s\n' "$REF_PYPROJECT" | grep -oE 'chigwell/telegram-mcp\.git@[0-9a-f]{40}' | head -1 | cut -d@ -f2)" || true
     if [[ -z "$sha" ]]; then
         error "Не удалось узнать, какую версию компонентов скачивать. Проверьте интернет и запустите установщик ещё раз."
         exit 1
@@ -237,11 +241,19 @@ _fetch_upstream() {
     mv "$partial" "$UPSTREAM_SOURCE"
 }
 
-# Version of the package about to be installed, from pyproject.toml of $REPO_REF;
-# empty if it cannot be read (the install itself does not depend on it).
+# pyproject.toml of $REPO_REF, downloaded once into REF_PYPROJECT: it gives both
+# the version shown to the user and the upstream SHA. Called directly, not in
+# $(...), so the variable survives. Empty if the download fails or stalls.
+_ref_pyproject() {
+    if [[ -z "$REF_PYPROJECT" ]]; then
+        REF_PYPROJECT="$(curl -fsSL --max-time 30 "$REPO_RAW_BASE/$REPO_REF/pyproject.toml" 2>/dev/null)" || true
+    fi
+}
+
+# Version of the package about to be installed; empty if it cannot be read
+# (the install itself does not depend on it).
 _ref_version() {
-    curl -fsSL "$REPO_RAW_BASE/$REPO_REF/pyproject.toml" 2>/dev/null |
-        sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1 || true
+    printf '%s\n' "$REF_PYPROJECT" | sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1 || true
 }
 
 # Version of the package installed in the venv; empty if it cannot be read.
@@ -251,6 +263,7 @@ _installed_version() {
 
 install_package() {
     local version=""
+    _ref_pyproject
     version="$(_ref_version)"
     info "Устанавливаю telegram-mcp-ag${version:+ $version} (ref: $REPO_REF)..."
     local package_url="$REPO_ARCHIVE_BASE/$REPO_REF.tar.gz"
@@ -264,8 +277,8 @@ install_package() {
         "$("$VENV_DIR/bin/python" -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).as_uri())' "$UPSTREAM_SOURCE")" >"$overrides"
     uv pip install -q --python "$VENV_DIR/bin/python" --reinstall --overrides "$overrides" "$package_url"
     rm -f "$overrides"
-    version="$(_installed_version)"
-    ok "Пакет telegram-mcp-ag${version:+ $version} установлен."
+    INSTALLED_VERSION="$(_installed_version)"
+    ok "Пакет telegram-mcp-ag${INSTALLED_VERSION:+ $INSTALLED_VERSION} установлен."
 }
 
 # The venv rebuild is confirmed good at this point (setup_python_and_venv()
@@ -773,10 +786,8 @@ package_dir = os.path.dirname(os.path.abspath(telegram_mcp.__file__))
 print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
 ' 2>/dev/null || true)"
 
-    local version=""
-    version="$(_installed_version)"
     echo
-    ok "Готово! telegram-mcp-ag${version:+ $version} установлен."
+    ok "Готово! telegram-mcp-ag${INSTALLED_VERSION:+ $INSTALLED_VERSION} установлен."
     echo
     echo "Что дальше:"
     echo "  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты."

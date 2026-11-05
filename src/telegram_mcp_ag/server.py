@@ -10,7 +10,9 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Annotated, List, Optional, Union
+
+from pydantic import BeforeValidator
 
 from telethon.errors.rpcerrorlist import (
     AuthKeyDuplicatedError,
@@ -186,25 +188,35 @@ mcp._mcp_server.version = _VERSION
 # post's media are 64-bit and exceed 2**53: a client that parses JSON into
 # doubles (Claude Code, Claude Desktop -- JavaScript) rounds the number before
 # it reaches the server, and the right media is never found. The same tool is
-# registered again, with media_id accepted as a string too; the work is still
-# done by upstream's function.
+# registered again with media_id declared as a string only: a schema that
+# allows an integer is what lets the client turn the digits into a number. The
+# work is still done by upstream's function.
 _DOWNLOAD_MEDIA = "download_media"
-_EXACT_JSON_INT = 2**53
 _upstream_download_tool = mcp._tool_manager._tools[_DOWNLOAD_MEDIA]
 _upstream_download_media = _upstream_download_tool.fn
 mcp._tool_manager.remove_tool(_DOWNLOAD_MEDIA)
 
 
-def _media_id_arg(value: Union[int, str, None]):
-    """``(media_id, error)``: an id given as digits in a string becomes an int.
+def _integer_as_text(value):
+    """A client that does send an exact integer (Python, Rust) is still accepted."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return value
 
-    Quotes around the digits are dropped: Claude Code turns bare digits into a
-    (rounded) number, and a quoted value reaches the server with its quotes.
+
+def _media_id_arg(value: Union[str, int, None]):
+    """``(media_id, error)``: the digits become an int; blank means "not given".
+
+    Quotes around the digits are dropped: a model may quote the id, and the client
+    then passes the quotes on as part of the text.
     """
-    if not isinstance(value, str):
-        return value, None
+    if value is None:
+        return None, None
+    text = str(_integer_as_text(value)).strip().strip("\"'").strip()
+    if not text:
+        return None, None  # some clients send "" for a value that is not set
     try:
-        return int(value.strip().strip("\"'").strip()), None
+        return int(text), None
     except ValueError:
         return None, "media_id must be a number: pass the id exactly as in rich_media."
 
@@ -218,7 +230,7 @@ async def download_media(
     chat_id: Union[int, str],
     message_id: int,
     file_path: Optional[str] = None,
-    media_id: Optional[Union[str, int]] = None,
+    media_id: Annotated[Optional[str], BeforeValidator(_integer_as_text)] = None,
     ctx: Optional[_runtime.Context] = None,
     account: Optional[str] = None,
 ) -> str:
@@ -232,16 +244,16 @@ async def download_media(
             `<first_root>/` if the root is already a downloads directory).
         media_id: Optional document/photo id to download when the message is a
             rich (block-format) post with several embedded media. Get the ids
-            from the message's "rich_media" records and pass the id as a string
-            of its digits: the ids are too large for a JSON number, and some
-            clients round them. Without it, the first embedded media is
+            from the message's "rich_media" records and pass the id's digits as
+            text: the ids are too large for a JSON number, and some clients
+            round them. Without it, the first embedded media is
             downloaded. Passing it for a message with regular media is an
             error — pick the media by message instead.
     """
     wanted, error = _media_id_arg(media_id)
     if error:
         return error
-    result = await _upstream_download_media(
+    return await _upstream_download_media(
         chat_id=chat_id,
         message_id=message_id,
         file_path=file_path,
@@ -249,14 +261,6 @@ async def download_media(
         ctx=ctx,
         account=account,
     )
-    if (
-        isinstance(media_id, int)
-        and abs(media_id) >= _EXACT_JSON_INT
-        and isinstance(result, str)
-        and result.startswith("No rich media with id")
-    ):
-        result += " If the id came from rich_media, pass it as a string: the number may have been rounded on the way."
-    return result
 
 
 def _install_login_client() -> None:

@@ -119,7 +119,7 @@ uv venv --seed --managed-python --python 3.14 .venv
 - `pyproject.toml` (`version`)
 - `src/telegram_mcp_ag/__init__.py` (`__version__`)
 
-Автоматической проверки расхождения между ними нет — сверяться вручную.
+Расхождение ловит тест `test_package_version_matches_pyproject` (`tests/test_server.py`).
 
 Каждый релиз — запись сверху в `CHANGELOG.md` (что умеет сервер и в какой версии
 это появилось; только факты) и, если появилась новая возможность, строка в его
