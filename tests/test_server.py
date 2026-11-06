@@ -1,5 +1,4 @@
 import asyncio
-import inspect
 import os
 import tomllib
 from pathlib import Path
@@ -221,92 +220,33 @@ def test_variable_is_removed_when_no_folder_is_usable(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# download_media: media_id accepted as a string
+# download_media: upstream's own tool, no wrapper
 # ---------------------------------------------------------------------------
-
-
-def _capture_upstream_download(monkeypatch, answer="Media downloaded to /x."):
-    calls = []
-
-    async def upstream(**kwargs):
-        calls.append(kwargs)
-        return answer
-
-    monkeypatch.setattr(server, "_upstream_download_media", upstream)
-    return calls
-
-
-def test_download_media_takes_a_large_media_id_as_a_string(monkeypatch):
-    calls = _capture_upstream_download(monkeypatch)
-
-    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="4996884764574090643"))
-
-    assert calls[0]["media_id"] == 4996884764574090643
-    assert (calls[0]["chat_id"], calls[0]["message_id"]) == (5, 7)
-
-
-@pytest.mark.parametrize("quoted", ['"4996884764574090643"', "'4996884764574090643'", ' "4996884764574090643" '])
-def test_download_media_drops_quotes_around_the_media_id(monkeypatch, quoted):
-    calls = _capture_upstream_download(monkeypatch)
-
-    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=quoted))
-
-    assert calls[0]["media_id"] == 4996884764574090643
-
-
-def test_download_media_passes_an_integer_or_no_media_id_through(monkeypatch):
-    calls = _capture_upstream_download(monkeypatch)
-
-    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=12))
-    asyncio.run(server.download_media(chat_id=5, message_id=7))
-
-    assert [c["media_id"] for c in calls] == [12, None]
-
-
-@pytest.mark.parametrize("blank", ["", "   ", '""'])
-def test_download_media_treats_a_blank_media_id_as_not_given(monkeypatch, blank):
-    calls = _capture_upstream_download(monkeypatch)
-
-    asyncio.run(server.download_media(chat_id=5, message_id=7, media_id=blank))
-
-    assert calls[0]["media_id"] is None
-
-
-def test_download_media_rejects_a_media_id_that_is_not_a_number(monkeypatch):
-    calls = _capture_upstream_download(monkeypatch)
-
-    result = asyncio.run(server.download_media(chat_id=5, message_id=7, media_id="photo"))
-
-    assert "media_id must be a number" in result
-    assert calls == []
 
 
 def _download_tool():
     return server.mcp._tool_manager._tools["download_media"]
 
 
-def test_download_media_schema_offers_media_id_only_as_text():
-    # An integer in the schema is what lets a JavaScript client round the id.
+def test_download_media_takes_media_id_as_a_string_upstream():
+    # rich_media ids exceed 2**53, so upstream reports them as strings and must
+    # accept them back as strings. A pin that loses this brings the rounding bug back.
     media_id = _download_tool().parameters["properties"]["media_id"]
 
-    assert {option.get("type") for option in media_id["anyOf"]} == {"string", "null"}
+    assert "string" in {option.get("type") for option in media_id["anyOf"]}
 
 
-def test_download_media_still_accepts_an_exact_integer_from_a_client():
+def test_download_media_accepts_a_large_media_id_as_a_string():
     arguments = _download_tool().fn_metadata.arg_model.model_validate(
-        {"chat_id": 5, "message_id": 7, "media_id": 4996884764574090643}
+        {"chat_id": 5, "message_id": 7, "media_id": "4996884764574090643"}
     )
 
     assert arguments.media_id == "4996884764574090643"
 
 
-def test_download_media_takes_the_same_arguments_as_upstream():
-    # A pin bump that renames or adds a parameter of upstream's download_media must
-    # fail here, not as a TypeError on every call.
-    ours = set(inspect.signature(server.download_media).parameters)
-    upstream = set(inspect.signature(server._upstream_download_media).parameters)
-
-    assert ours == upstream
+def test_download_media_is_upstreams_own_tool():
+    # A pin bump must not silently put a wrapper of ours back in front of it.
+    assert _download_tool().fn.__module__.startswith("telegram_mcp.")
 
 
 def test_download_media_keeps_upstream_annotations_and_context():
