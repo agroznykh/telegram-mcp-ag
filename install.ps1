@@ -339,16 +339,59 @@ function Confirm-NewVenv {
     }
 }
 
+# What keeps the install folder from being replaced. Windows refuses to rename
+# or delete files another process has open, and the server (started by Claude
+# Desktop, Claude Code, Codex...) holds its own files open -- Claude Desktop
+# even starts it again the moment a new one appears. Returns display names:
+# the server itself when it runs out of $VenvDir, and Claude Desktop when a
+# venv already exists (it would restart the server mid-install).
+function Get-InstallHolder {
+    $holders = @()
+    if (-not (Test-Path $VenvDir)) { return $holders }
+    $venvPrefix = $VenvDir.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    foreach ($process in (Get-Process -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $process.Path } catch { $path = $null }
+        if (-not $path) { continue }
+        if ($path.StartsWith($venvPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $holders += 'сервер telegram-mcp-ag'
+        } elseif ($path -like '*\WindowsApps\Claude_*\app\Claude.exe') {
+            $holders += 'Claude Desktop'
+        }
+    }
+    return @($holders | Select-Object -Unique)
+}
+
+# Asks the person to close what holds the install and waits. Never closes
+# anything itself: they may have unsaved work in it.
+function Wait-InstallFree {
+    while ($true) {
+        $holders = @(Get-InstallHolder)
+        if ($holders.Count -eq 0) { return }
+        Write-Warn ('Сейчас запущено: ' + ($holders -join ', ') + '. Пока оно работает, Windows не даёт заменить файлы сервера.')
+        Write-Info 'Закройте Claude Desktop полностью: крестик на окне его не закрывает. Нажмите правой кнопкой на значок Claude в области уведомлений (справа внизу, рядом с часами; может быть под стрелкой ^) и выберите "Выход". Если не получилось -- перезагрузите компьютер и запустите установщик снова. Другие программы, где был открыт Telegram (Claude Code, Codex), тоже закройте.'
+        $answer = Read-Answer -Prompt 'Когда закроете, нажмите Enter. Чтобы отменить установку, введите q'
+        if ($answer -match '^[QqЙй]$') {
+            Write-Info 'Установка отменена. Ничего не изменено.'
+            exit 1
+        }
+    }
+}
+
 # Called from the top-level `finally` (runs on every exit, success or
 # failure) -- a backup still present means the rebuild was interrupted
 # before Confirm-NewVenv ran, so put the old, working venv back rather than
 # leave the user with neither a working old one nor a finished new one.
 function Restore-VenvBackupOnFailure {
     if (Test-Path $VenvBackupDir) {
-        if (Test-Path $VenvDir) {
-            Remove-Item -Recurse -Force $VenvDir
+        try {
+            if (Test-Path $VenvDir) {
+                Remove-Item -Recurse -Force $VenvDir
+            }
+            Move-Item -Path $VenvBackupDir -Destination $VenvDir
+        } catch {
+            Write-Failure "Не удалось вернуть прежнюю установку: файлы заняты запущенной программой (скорее всего, Claude Desktop). Закройте её полностью и запустите установщик ещё раз. Прежняя копия лежит в $VenvBackupDir."
         }
-        Move-Item -Path $VenvBackupDir -Destination $VenvDir
     }
 }
 
@@ -1116,6 +1159,7 @@ function Remove-ClaudeDesktopJsonEntry {
 }
 
 function Invoke-Uninstall {
+    Wait-InstallFree
     Write-Info 'Снимаю регистрации из клиентов...'
 
     $claudeExe = Get-ClaudeCodeExe
@@ -1178,6 +1222,7 @@ function Invoke-Main {
         return
     }
 
+    Wait-InstallFree
     Initialize-PythonAndVenv
     Install-ServerPackage
     Confirm-NewVenv

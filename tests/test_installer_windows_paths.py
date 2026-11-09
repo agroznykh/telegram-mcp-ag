@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -174,10 +175,30 @@ def test_native_quiet_returns_the_exit_code_even_when_the_client_writes_to_stder
 
 
 def test_python_script_helper_runs_the_script_with_its_arguments(tmp_path):
-    import sys
-
     out = _run(
         tmp_path,
         f"Invoke-PythonScript -PythonExe '{sys.executable}' -ScriptBody 'import sys; print(sys.argv[1])' -Arguments @('hello')",
     )
     assert out == "hello"
+
+
+def test_no_holder_when_there_is_no_install_yet(tmp_path):
+    # First install: nothing to replace, so nothing can hold it.
+    assert _run(tmp_path, "@(Get-InstallHolder).Count") == "0"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs a copy of a system binary that still runs")
+def test_server_running_from_the_venv_is_reported_as_holding_the_install(tmp_path):
+    venv_bin = tmp_path / "home" / "telegram-mcp-ag" / ".venv" / "Scripts"
+    venv_bin.mkdir(parents=True)
+    fake_server = venv_bin / "telegram-mcp-ag.exe"
+    shutil.copy(shutil.which("sleep"), fake_server)
+    fake_server.chmod(0o755)
+    process = subprocess.Popen([str(fake_server), "30"])
+    try:
+        assert _run(tmp_path, "Get-InstallHolder") == "сервер telegram-mcp-ag"
+    finally:
+        process.kill()
+        process.wait()
+    # Once it is gone the install is free again.
+    assert _run(tmp_path, "@(Get-InstallHolder).Count") == "0"
