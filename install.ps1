@@ -539,9 +539,9 @@ function Register-ClaudeCode {
     $claudeExe = Get-ClaudeCodeExe
     if (-not $claudeExe) { return }
     Write-Info 'Обнаружен Claude Code -- регистрирую сервер...'
-    & $claudeExe mcp remove -s user $ServerName *> $null
-    & $claudeExe mcp add -s user $ServerName -- (Get-VenvServerExe) *> $null
-    if ($LASTEXITCODE -eq 0) {
+    Invoke-NativeQuiet -Exe $claudeExe -Arguments @('mcp', 'remove', '-s', 'user', $ServerName) | Out-Null
+    $addStatus = Invoke-NativeQuiet -Exe $claudeExe -Arguments @('mcp', 'add', '-s', 'user', $ServerName, '--', (Get-VenvServerExe))
+    if ($addStatus -eq 0) {
         Write-Ok 'Claude Code настроен (scope: user).'
         if ($script:AutoApproveTools) {
             $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
@@ -686,10 +686,34 @@ if servers is not None and server_name in servers:
         f.write("\n")
 '@
 
+# Feeds a Python script to `python -` through stdin. The top of this file sets
+# $OutputEncoding to UTF-8 so Cyrillic output is readable; Windows PowerShell
+# 5.1 then prefixes the piped text with a byte-order mark, and Python rejects it
+# ("invalid non-printable character U+FEFF"). A BOM-less encoding in this
+# function's own scope avoids that without touching the caller's.
+function Invoke-PythonScript {
+    param([string]$PythonExe, [string]$ScriptBody, [string[]]$Arguments)
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $ScriptBody | & $PythonExe - @Arguments
+}
+
 function Invoke-PythonEdit {
     param([string]$PythonExe, [string]$ScriptBody, [string[]]$Arguments)
-    $ScriptBody | & $PythonExe - @Arguments
+    Invoke-PythonScript -PythonExe $PythonExe -ScriptBody $ScriptBody -Arguments $Arguments
     return ($LASTEXITCODE -eq 0)
+}
+
+# Runs a client's CLI and returns its exit code, discarding its output. Under
+# $ErrorActionPreference = 'Stop', Windows PowerShell 5.1 turns anything a
+# native command writes to stderr into a terminating error -- even redirected --
+# so `claude mcp remove` on a server that isn't there ("No MCP server named...")
+# would abort the whole step. The preference is lowered in this function's
+# scope only.
+function Invoke-NativeQuiet {
+    param([string]$Exe, [string[]]$Arguments)
+    $ErrorActionPreference = 'Continue'
+    & $Exe @Arguments *> $null
+    return $LASTEXITCODE
 }
 
 # Adds or removes "mcp__$ServerName" in the top-level permissions.allow array
@@ -775,9 +799,9 @@ function Register-Codex {
     Write-Info 'Обнаружен Codex CLI / ChatGPT Desktop -- регистрирую сервер...'
 
     if ($hasCodexCli) {
-        codex mcp remove $ServerName *> $null
-        codex mcp add $ServerName -- (Get-VenvServerExe) *> $null
-        if ($LASTEXITCODE -eq 0) {
+        Invoke-NativeQuiet -Exe 'codex' -Arguments @('mcp', 'remove', $ServerName) | Out-Null
+        $addStatus = Invoke-NativeQuiet -Exe 'codex' -Arguments @('mcp', 'add', $ServerName, '--', (Get-VenvServerExe))
+        if ($addStatus -eq 0) {
             Write-Ok "Codex настроен через 'codex mcp add'."
             if ($script:AutoApproveTools) { Set-CodexApproval -CodexConfig $codexConfig }
             return
@@ -1002,7 +1026,10 @@ function Invoke-SelfCheck {
     Write-Host ''
     Write-Info 'Проверяю подключение к Telegram...'
     $py = Get-VenvPython
-    $output = $script:SelfCheckScript | & $py - 2>&1
+    # The server logs INFO lines to stderr; with 2>&1 and 'Stop' PowerShell 5.1
+    # would treat the first one as a failure.
+    $ErrorActionPreference = 'Continue'
+    $output = Invoke-PythonScript -PythonExe $py -ScriptBody $script:SelfCheckScript 2>&1
     $status = $LASTEXITCODE
     $outputText = ($output | Out-String).TrimEnd()
 
@@ -1025,7 +1052,7 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     $py = Get-VenvPython
     $errorLog = ''
     try {
-        $errorLog = ($errorLogScript | & $py - 2>$null | Out-String).Trim()
+        $errorLog = (Invoke-PythonScript -PythonExe $py -ScriptBody $errorLogScript 2>$null | Out-String).Trim()
     } catch {
         $errorLog = ''
     }
@@ -1093,8 +1120,8 @@ function Invoke-Uninstall {
 
     $claudeExe = Get-ClaudeCodeExe
     if ($claudeExe) {
-        & $claudeExe mcp remove -s user $ServerName *> $null
-        if ($LASTEXITCODE -eq 0) { Write-Ok 'Claude Code: сервер удалён.' }
+        $removeStatus = Invoke-NativeQuiet -Exe $claudeExe -Arguments @('mcp', 'remove', '-s', 'user', $ServerName)
+        if ($removeStatus -eq 0) { Write-Ok 'Claude Code: сервер удалён.' }
         $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
         Update-ClaudeSettingsPermission -SettingsPath $settingsPath -Action 'remove'
     }
@@ -1109,8 +1136,8 @@ function Invoke-Uninstall {
 
     $codexConfig = Join-Path $env:USERPROFILE '.codex\config.toml'
     if (Get-Command codex -ErrorAction SilentlyContinue) {
-        codex mcp remove $ServerName *> $null
-        if ($LASTEXITCODE -eq 0) {
+        $removeStatus = Invoke-NativeQuiet -Exe 'codex' -Arguments @('mcp', 'remove', $ServerName)
+        if ($removeStatus -eq 0) {
             Write-Ok 'Codex: сервер удалён.'
         } else {
             Remove-CodexTomlEntry -CodexConfig $codexConfig
