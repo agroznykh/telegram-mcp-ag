@@ -25,7 +25,7 @@ CMD_MAC_LINUX = (
 CMD_WINDOWS = (
     '$f = "$env:TEMP\\telegram-mcp-ag-install.ps1"; '
     "iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'"
-    " -OutFile $f; & $f -Relogin"
+    " -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f -Relogin"
 )
 
 
