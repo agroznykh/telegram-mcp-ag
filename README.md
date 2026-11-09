@@ -53,8 +53,13 @@ curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/inst
 **Windows** — вставьте в PowerShell:
 
 ```powershell
-$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f
 ```
+
+Параметр `-ExecutionPolicy Bypass` нужен потому, что на многих компьютерах
+PowerShell по умолчанию запрещает запускать скачанные скрипты (ошибка «выполнение
+сценариев отключено в этой системе»). Он действует только на этот один запуск и
+ничего в настройках системы не меняет.
 
 Скрипт попросит указать `api_id` и `api_hash`, покажет QR-код прямо в
 терминале и попросит указать пароль двухфакторной аутентификации (если он
@@ -62,8 +67,18 @@ $f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent
 зайдите в Telegram на телефоне → Настройки → Устройства → Подключить
 устройство.
 
-После установки перезапустите то приложение, которым пользуетесь (если оно
-уже было открыто) — новые инструменты появятся в новом чате.
+После установки:
+
+- **Claude Desktop** нужно закрыть **полностью** и открыть снова. Крестик на окне
+  приложение не закрывает, оно остаётся работать в фоне и не увидит сервер.
+  На Windows: правой кнопкой по значку Claude в области уведомлений (справа внизу,
+  рядом с часами, может быть под стрелкой `^`) → **Выход**. Если не получилось —
+  перезагрузите компьютер. На Mac: `Cmd+Q`.
+- **Claude Code** и **Codex CLI** — откройте новую сессию.
+- **ChatGPT Desktop** перезапускать обычно не нужно: сервер и скилл подхватываются
+  сами, в новом чате.
+
+Новые инструменты появятся в новом чате.
 
 ### Скилл `telegram-digest` для Claude Desktop (обязательный шаг)
 
@@ -161,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/inst
 **Windows:**
 
 ```powershell
-$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f -Relogin
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f -Relogin
 ```
 
 ## Как удалить
@@ -173,7 +188,7 @@ curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/inst
 
 Windows:
 ```powershell
-$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; & $f -Uninstall
+$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f -Uninstall
 ```
 
 **Обязательно отзовите доступ в приложении Telegram:** Настройки → Устройства,

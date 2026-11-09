@@ -101,6 +101,14 @@ $script:InstalledVersion = ''
 $ConfigPath = Join-Path $InstallDir 'config.env'
 $ServerName = 'telegram-mcp-ag'
 
+# The command a person can paste to run this installer again with a flag. The
+# installer normally runs from a temp file, so there is no install.ps1 in the
+# current folder to point them at.
+function Get-InstallerCommand {
+    param([string]$Flag)
+    '$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr ''https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f ' + $Flag
+}
+
 $script:MaintenanceVenvs = New-Object System.Collections.Generic.List[string]
 # Read by Register-ClaudeCode()/Register-Codex(). Always on, without asking:
 # the server is read-only, so a confirmation on every call protects nothing.
@@ -425,7 +433,7 @@ function Invoke-TelegramLogin {
             Write-ConfigEnv -ApiId $ApiId -ApiHash $ApiHash
             continue
         }
-        Write-Failure 'Не удалось войти в Telegram. Запустите вход ещё раз: .\install.ps1 -Relogin'
+        Write-Failure "Не удалось войти в Telegram. Запустите вход ещё раз: $(Get-InstallerCommand '-Relogin')"
         exit 1
     }
 }
@@ -506,11 +514,33 @@ function Write-ConfigEnv {
 # Client registration
 # ---------------------------------------------------------------------------
 
+# Claude Code: either `claude` on PATH, or the copy the Claude Desktop app
+# unpacks for its own "Code" tab (not on PATH):
+# %LOCALAPPDATA%\Claude-Data\claude_<publisher id>\claude-code\<version>\<hash>\claude.exe
+# Both read the same ~\.claude, so registering through either is enough.
+function Get-ClaudeCodeExe {
+    $onPath = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($onPath) { return $onPath.Source }
+
+    if (-not $env:LOCALAPPDATA) { return $null }
+    $dataRoot = Join-Path $env:LOCALAPPDATA 'Claude-Data'
+    if (-not (Test-Path $dataRoot)) { return $null }
+    $found = Get-ChildItem -Path $dataRoot -Directory -Filter 'claude_*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'claude-code' } |
+        Where-Object { Test-Path $_ } |
+        ForEach-Object { Get-ChildItem -Path $_ -Recurse -Depth 2 -File -Filter 'claude.exe' -ErrorAction SilentlyContinue } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($found) { return $found.FullName }
+    return $null
+}
+
 function Register-ClaudeCode {
-    if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { return }
+    $claudeExe = Get-ClaudeCodeExe
+    if (-not $claudeExe) { return }
     Write-Info 'Обнаружен Claude Code -- регистрирую сервер...'
-    claude mcp remove -s user $ServerName *> $null
-    claude mcp add -s user $ServerName -- (Get-VenvServerExe) *> $null
+    & $claudeExe mcp remove -s user $ServerName *> $null
+    & $claudeExe mcp add -s user $ServerName -- (Get-VenvServerExe) *> $null
     if ($LASTEXITCODE -eq 0) {
         Write-Ok 'Claude Code настроен (scope: user).'
         if ($script:AutoApproveTools) {
@@ -518,7 +548,7 @@ function Register-ClaudeCode {
             Update-ClaudeSettingsPermission -SettingsPath $settingsPath -Action 'add'
         }
     } else {
-        Write-Warn "Не удалось зарегистрировать сервер в Claude Code. Добавьте вручную: claude mcp add -s user $ServerName -- $(Get-VenvServerExe)"
+        Write-Warn "Не удалось зарегистрировать сервер в Claude Code. Добавьте вручную: `"$claudeExe`" mcp add -s user $ServerName -- $(Get-VenvServerExe)"
     }
 }
 
@@ -762,10 +792,60 @@ function Register-Codex {
     }
 }
 
+# Where Claude Desktop keeps claude_desktop_config.json depends on how it was
+# installed, so the folder is searched for, first match wins:
+#   1. %LOCALAPPDATA%\Claude-Data\claude_<publisher id> -- current Microsoft
+#      Store build: user data lives outside the package.
+#   2. %LOCALAPPDATA%\Packages\Claude_<publisher id>\LocalCache\Roaming\Claude --
+#      older Store builds, where Windows redirects %APPDATA% into the package.
+#      The current build leaves a ".user-data-left.*" marker there once it has
+#      moved the data out; such a folder is stale and skipped.
+#   3. %APPDATA%\Claude -- the classic installer.
+# The publisher id (pzs8sxrjxfjjc) is the same on every machine, but it is
+# matched with a wildcard so a changed signing certificate doesn't break this.
+# Returns the folder, or $null.
+function Get-ClaudeDesktopDir {
+    $candidates = @()
+    if ($env:LOCALAPPDATA) {
+        $dataRoot = Join-Path $env:LOCALAPPDATA 'Claude-Data'
+        if (Test-Path $dataRoot) {
+            $candidates += Get-ChildItem -Path $dataRoot -Directory -Filter 'claude_*' -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.FullName }
+        }
+        $packagesRoot = Join-Path $env:LOCALAPPDATA 'Packages'
+        if (Test-Path $packagesRoot) {
+            $candidates += Get-ChildItem -Path $packagesRoot -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path (Join-Path (Join-Path $_.FullName 'LocalCache') 'Roaming') 'Claude' }
+        }
+    }
+    if ($env:APPDATA) { $candidates += Join-Path $env:APPDATA 'Claude' }
+
+    foreach ($dir in $candidates) {
+        if (-not (Test-Path $dir)) { continue }
+        if (Get-ChildItem -Path $dir -Force -Filter '.user-data-left*' -ErrorAction SilentlyContinue) { continue }
+        return $dir
+    }
+    return $null
+}
+
+# A Store install whose data folder isn't there yet: the app has never been
+# started, so there is nothing to register with.
+function Test-ClaudeDesktopStoreInstalled {
+    if (-not $env:LOCALAPPDATA) { return $false }
+    $packagesRoot = Join-Path $env:LOCALAPPDATA 'Packages'
+    if (-not (Test-Path $packagesRoot)) { return $false }
+    return [bool](Get-ChildItem -Path $packagesRoot -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue)
+}
+
 function Register-ClaudeDesktop {
-    $target = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
-    $claudeDir = Join-Path $env:APPDATA 'Claude'
-    if (-not (Test-Path $claudeDir)) { return }
+    $claudeDir = Get-ClaudeDesktopDir
+    if (-not $claudeDir) {
+        if (Test-ClaudeDesktopStoreInstalled) {
+            Write-Warn 'Claude Desktop установлен, но папка его настроек не найдена -- похоже, приложение ещё ни разу не запускали. Откройте его один раз, полностью закройте и запустите установщик снова.'
+        }
+        return
+    }
+    $target = Join-Path $claudeDir 'claude_desktop_config.json'
 
     Write-Info 'Обнаружен Claude Desktop -- регистрирую сервер...'
     $py = Get-MaintenancePython
@@ -781,7 +861,8 @@ function Register-ClaudeDesktop {
     $ok = Invoke-PythonEdit -PythonExe $py -ScriptBody $script:ClaudeDesktopJsonUpsertScript `
         -Arguments @($target, (Get-VenvServerExe), $ServerName)
     if ($ok) {
-        Write-Ok "Claude Desktop настроен ($target). Перезапустите приложение, чтобы изменения применились."
+        Write-Ok "Claude Desktop настроен ($target)."
+        Write-Info 'Чтобы Claude Desktop увидел сервер, закройте его полностью -- крестик на окне приложение не закрывает: нажмите правой кнопкой на значок Claude в области уведомлений (справа внизу, рядом с часами; может быть под стрелкой ^), выберите "Выход" и откройте приложение снова. Если не получилось -- перезагрузите компьютер.'
         if ($script:AutoApproveTools) {
             Write-Info 'У Claude Desktop нет способа разрешить это заранее -- при первом вызове инструмента нажмите "Always Allow".'
         }
@@ -860,9 +941,8 @@ function Install-ClaudeSkillZip {
 }
 
 function Install-ClaudeSkills {
-    $haveCli = [bool](Get-Command claude -ErrorAction SilentlyContinue)
-    $claudeDesktopDir = Join-Path $env:APPDATA 'Claude'
-    $haveDesktop = Test-Path $claudeDesktopDir
+    $haveCli = [bool](Get-ClaudeCodeExe)
+    $haveDesktop = [bool](Get-ClaudeDesktopDir)
     if (-not $haveCli -and -not $haveDesktop) { return }
 
     Write-Info 'Устанавливаю скилл Claude (сводка по Telegram)...'
@@ -954,13 +1034,17 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     Write-Ok "Готово! telegram-mcp-ag$(Format-Version $script:InstalledVersion) установлен."
     Write-Host ''
     Write-Host 'Что дальше:'
-    Write-Host '  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты.'
+    Write-Host '  - Claude Desktop: закройте полностью (значок в области уведомлений -> "Выход"; если не получилось -- перезагрузите компьютер) и откройте снова.'
+    Write-Host '  - Claude Code и Codex: откройте новую сессию.'
+    Write-Host '  - ChatGPT Desktop: перезапускать обычно не нужно -- сервер и скилл подхватятся сами в новом чате.'
     Write-Host "  - Проверить сервер вручную: $(Get-VenvServerExe)"
     if ($errorLog) {
         Write-Host "  - Лог ошибок сервера: $errorLog"
     }
-    Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии): .\install.ps1 -Relogin'
-    Write-Host '  - Полное удаление: .\install.ps1 -Uninstall'
+    Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в PowerShell:'
+    Write-Host "      $(Get-InstallerCommand '-Relogin')"
+    Write-Host '  - Полное удаление, вставьте в PowerShell:'
+    Write-Host "      $(Get-InstallerCommand '-Uninstall')"
 }
 
 # ---------------------------------------------------------------------------
@@ -1007,8 +1091,9 @@ function Remove-ClaudeDesktopJsonEntry {
 function Invoke-Uninstall {
     Write-Info 'Снимаю регистрации из клиентов...'
 
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
-        claude mcp remove -s user $ServerName *> $null
+    $claudeExe = Get-ClaudeCodeExe
+    if ($claudeExe) {
+        & $claudeExe mcp remove -s user $ServerName *> $null
         if ($LASTEXITCODE -eq 0) { Write-Ok 'Claude Code: сервер удалён.' }
         $settingsPath = Join-Path $env:USERPROFILE '.claude\settings.json'
         Update-ClaudeSettingsPermission -SettingsPath $settingsPath -Action 'remove'
@@ -1034,8 +1119,10 @@ function Invoke-Uninstall {
         Remove-CodexTomlEntry -CodexConfig $codexConfig
     }
 
-    $claudeDesktopConfig = Join-Path $env:APPDATA 'Claude\claude_desktop_config.json'
-    Remove-ClaudeDesktopJsonEntry -Target $claudeDesktopConfig
+    $claudeDesktopDir = Get-ClaudeDesktopDir
+    if ($claudeDesktopDir) {
+        Remove-ClaudeDesktopJsonEntry -Target (Join-Path $claudeDesktopDir 'claude_desktop_config.json')
+    }
 
     if (Test-Path $InstallDir) {
         if (Confirm-Action "Удалить папку $InstallDir вместе с сохранённой сессией?") {
@@ -1070,7 +1157,7 @@ function Invoke-Main {
 
     if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
         Write-Info 'Вход в Telegram уже выполнен -- использую сохранённую сессию.'
-        Write-Info 'Чтобы войти заново (например, после отзыва сессии), запустите: .\install.ps1 -Relogin'
+        Write-Info "Чтобы войти заново (например, после отзыва сессии), вставьте в PowerShell: $(Get-InstallerCommand '-Relogin')"
     } else {
         $creds = Read-ConfigCredentials -Path $ConfigPath
         if ($creds) {

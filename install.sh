@@ -41,6 +41,13 @@ INSTALLED_VERSION=""
 CONFIG_PATH="$INSTALL_DIR/config.env"
 SERVER_NAME="telegram-mcp-ag"
 
+# The command a person can paste to run this installer again with a flag. The
+# installer normally arrives through a pipe (curl | bash), so there is no
+# install.sh in the current folder to point them at.
+installer_command() {
+    printf '%s' "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash -s -- $1"
+}
+
 # Filled in by prompt_api_credentials() before write_config_env() reads
 # them. Pre-declared (empty) so `set -u` doesn't complain if that ever changes.
 API_ID=""
@@ -346,7 +353,7 @@ run_telegram_login() {
             write_config_env
             continue
         fi
-        error "Не удалось войти в Telegram. Запустите вход ещё раз: bash install.sh --relogin"
+        error "Не удалось войти в Telegram. Запустите вход ещё раз: $(installer_command --relogin)"
         exit 1
     done
 }
@@ -639,7 +646,7 @@ register_claude_desktop() {
     target="$found/claude_desktop_config.json"
     info "Обнаружен Claude Desktop -- регистрирую сервер..."
     if _claude_desktop_json_upsert "$target"; then
-        ok "Claude Desktop настроен ($target). Перезапустите приложение, чтобы изменения применились."
+        ok "Claude Desktop настроен ($target). Чтобы он увидел сервер, выйдите из приложения полностью (на Mac -- Cmd+Q; просто закрыть окно мало) и откройте снова."
         if [[ "$AUTO_APPROVE_TOOLS" -eq 1 ]]; then
             info "У Claude Desktop нет способа разрешить это заранее -- при первом вызове инструмента нажмите \"Always Allow\"."
         fi
@@ -790,13 +797,17 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     ok "Готово! telegram-mcp-ag${INSTALLED_VERSION:+ $INSTALLED_VERSION} установлен."
     echo
     echo "Что дальше:"
-    echo "  - Перезапустите Claude Code / Codex / Claude Desktop, если они уже были открыты."
+    echo "  - Claude Desktop: выйдите полностью (на Mac -- Cmd+Q) и откройте снова."
+    echo "  - Claude Code и Codex: откройте новую сессию."
+    echo "  - ChatGPT Desktop: перезапускать обычно не нужно -- сервер и скилл подхватятся сами в новом чате."
     echo "  - Проверить сервер вручную: $VENV_DIR/bin/telegram-mcp-ag"
     if [[ -n "$error_log" ]]; then
         echo "  - Лог ошибок сервера: $error_log"
     fi
-    echo "  - Повторный вход в Telegram (например, после отзыва сессии): bash install.sh --relogin"
-    echo "  - Полное удаление: bash install.sh --uninstall"
+    echo "  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в терминал:"
+    echo "      $(installer_command --relogin)"
+    echo "  - Полное удаление, вставьте в терминал:"
+    echo "      $(installer_command --uninstall)"
 }
 
 # ---------------------------------------------------------------------------
@@ -962,7 +973,7 @@ main() {
 
     if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
         info "Вход в Telegram уже выполнен -- использую сохранённую сессию."
-        info "Чтобы войти заново (например, после отзыва сессии), запустите: bash install.sh --relogin"
+        info "Чтобы войти заново (например, после отзыва сессии), вставьте в терминал: $(installer_command --relogin)"
     else
         if load_api_credentials "$CONFIG_PATH"; then
             info "Использую сохранённые api_id и api_hash."
