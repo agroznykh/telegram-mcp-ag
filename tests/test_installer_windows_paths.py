@@ -191,7 +191,8 @@ def test_no_holder_when_there_is_no_install_yet(tmp_path):
 def test_server_running_from_the_venv_is_reported_as_holding_the_install(tmp_path):
     venv_bin = tmp_path / "home" / "telegram-mcp-ag" / ".venv" / "Scripts"
     venv_bin.mkdir(parents=True)
-    fake_server = venv_bin / "telegram-mcp-ag.exe"
+    # Some distros ship `sleep` as a multi-call binary that refuses to run under another name.
+    fake_server = venv_bin / "sleep"
     shutil.copy(shutil.which("sleep"), fake_server)
     fake_server.chmod(0o755)
     process = subprocess.Popen([str(fake_server), "30"])
