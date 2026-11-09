@@ -161,3 +161,23 @@ def test_rerun_command_works_without_a_local_install_ps1(tmp_path):
     command = _run(tmp_path, "Get-InstallerCommand '-Relogin'")
     assert command.endswith("-ExecutionPolicy Bypass -File $f -Relogin")
     assert "iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'" in command
+
+
+@pytest.mark.skipif(os.name == "nt", reason="uses a shell script as the fake client CLI")
+def test_native_quiet_returns_the_exit_code_even_when_the_client_writes_to_stderr(tmp_path):
+    # `claude mcp remove` on a server that isn't registered prints to stderr and
+    # exits 1; that must not abort the installer step (it runs with 'Stop').
+    fake = _touch(tmp_path / "fake-client", "#!/bin/sh\necho 'No MCP server named x' >&2\nexit 3\n")
+    fake.chmod(0o755)
+    out = _run(tmp_path, f"$ErrorActionPreference = 'Stop'; Invoke-NativeQuiet -Exe '{fake}' -Arguments @('mcp', 'remove')")
+    assert out == "3"
+
+
+def test_python_script_helper_runs_the_script_with_its_arguments(tmp_path):
+    import sys
+
+    out = _run(
+        tmp_path,
+        f"Invoke-PythonScript -PythonExe '{sys.executable}' -ScriptBody 'import sys; print(sys.argv[1])' -Arguments @('hello')",
+    )
+    assert out == "hello"

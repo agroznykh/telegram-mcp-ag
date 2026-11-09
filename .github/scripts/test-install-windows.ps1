@@ -40,6 +40,13 @@ if ($LASTEXITCODE -ne 0) { throw 'pip cannot install: the client-config helpers 
 & $py (Join-Path $PSScriptRoot 'probe_server.py') (Get-VenvServerExe)
 if ($LASTEXITCODE -ne 0) { throw 'the installed server did not start' }
 
+# Windows PowerShell 5.1 prefixes piped text with a BOM when $OutputEncoding is
+# [Text.Encoding]::UTF8, which is what install.ps1 sets for a real console.
+# Python rejects it, so the helper scripts that are piped to `python -` must not
+# depend on the caller's $OutputEncoding.
+$OutputEncoding = [System.Text.Encoding]::UTF8
+if (-not (Invoke-PythonEdit -PythonExe $py -ScriptBody 'import sys' -Arguments @())) { throw 'a script piped to python failed under a UTF-8 $OutputEncoding' }
+
 Write-Host 'Second run: the upstream copy must be reused and the server must still start.'
 Initialize-PythonAndVenv
 Install-ServerPackage
