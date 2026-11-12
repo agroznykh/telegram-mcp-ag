@@ -22,3 +22,6 @@ config.env
 # Рабочие заметки — не для публичного репозитория
 notes/
 
+
+# Снимки страниц Playwright MCP
+.playwright-mcp/

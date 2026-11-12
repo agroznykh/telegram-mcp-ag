@@ -98,7 +98,8 @@ uv venv --seed --managed-python --python 3.14 .venv
 
 Тесты не ходят в сеть и не требуют Telegram-сессии.
 
-Код — только через pull request, прямые коммиты в `main` — только для `.md`. Это
+Код — только через pull request, прямые коммиты в `main` — только для `.md` и
+`.gitignore`. Это
 запрещает pre-commit: после клонирования один раз выполнить
 `git config core.hooksPath .githooks`.
 
