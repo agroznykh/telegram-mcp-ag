@@ -74,6 +74,37 @@ def test_default_account_is_used_when_none_is_given():
     assert result["reached"] == ["personal"]
 
 
+def test_changing_tool_ignores_the_default_and_asks_for_the_account():
+    script = (
+        _PREAMBLE
+        + """
+from telegram_mcp.tools import messages
+messages.get_client = fake_get_client
+print(json.dumps({
+    "no_account": call('send_message', chat_id=1, message='hi'),
+    "named": call('send_message', chat_id=1, message='hi', account='Work'),
+}))
+"""
+    )
+    result = _run(script, TELEGRAM_EXPOSED_TOOLS="all", TELEGRAM_DEFAULT_ACCOUNT="personal")
+    assert result["no_account"]["reached"] == []
+    assert "`work`" in result["no_account"]["out"]
+    assert result["named"]["reached"] == ["work"]
+
+
+def test_changing_tool_with_a_single_account_needs_no_account_argument():
+    script = (
+        _PREAMBLE
+        + """
+from telegram_mcp.tools import messages
+messages.get_client = fake_get_client
+print(json.dumps(call('send_message', chat_id=1, message='hi')))
+"""
+    )
+    result = _run(script, accounts=("",), TELEGRAM_EXPOSED_TOOLS="all")
+    assert result["reached"] == ["default"]
+
+
 def test_default_account_spelling_is_folded_to_the_canonical_label():
     result = _run(
         _PREAMBLE + "print(json.dumps(call('get_chats')))",

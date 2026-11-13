@@ -65,8 +65,15 @@ def _quoted(value: object) -> str:
     return text if len(text) <= 40 else text[:40] + "…"
 
 
-def resolve(account: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """Return ``(label, None)`` for the account to use or ``(None, text)`` to answer with."""
+def resolve(
+    account: Optional[str], readonly: bool = True
+) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(label, None)`` for the account to use or ``(None, text)`` to answer with.
+
+    A tool that changes something (``readonly=False``) never falls back to the
+    default account when there are several: what it does is hard to take back,
+    so the account has to be named in every such call.
+    """
     labels = _labels()
     if account is not None and str(account).strip() != "":
         label = canonical_account_label(str(account))
@@ -77,7 +84,7 @@ def resolve(account: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         return None, "Нет подключённых аккаунтов Telegram."
     if len(labels) == 1:
         return labels[0], None
-    default = default_label()
+    default = default_label() if readonly else None
     if default is not None:
         return default, None
     return None, (
@@ -92,7 +99,7 @@ def _account_aware(fn: Callable) -> Callable:
 
 
 def with_account(readonly: bool = False):
-    """Drop-in for upstream's ``with_account``; ``readonly`` is kept for the signature.
+    """Drop-in for upstream's ``with_account``; ``readonly`` is the flag upstream passes.
 
     The wrapped function must take ``account`` as a keyword (it is how FastMCP
     passes it) and is always called with the canonical label of one account.
@@ -104,7 +111,7 @@ def with_account(readonly: bool = False):
     def decorator(fn: Callable):
         @wraps(fn)
         async def wrapper(*args, **kwargs):
-            label, answer = resolve(kwargs.get("account"))
+            label, answer = resolve(kwargs.get("account"), readonly)
             if answer is not None:
                 return answer
             if label is not None:
