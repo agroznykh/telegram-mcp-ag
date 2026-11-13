@@ -160,3 +160,35 @@ def test_patch_reaches_every_wildcard_importing_tools_submodule():
     ):
         mod = importlib.import_module(f"telegram_mcp.tools.{name}")
         assert mod.log_and_format_error is server.log_and_format_error
+
+
+# ---------------------------------------------------------------------------
+# The command names the account
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("system", "expected"),
+    [("Darwin", "--relogin --account work"), ("Linux", "--relogin --account work"), ("Windows", "-Relogin -Account work")],
+)
+def test_instructions_name_the_account(monkeypatch, system, expected):
+    monkeypatch.setattr(relogin.platform, "system", lambda: system)
+
+    assert expected in relogin.instructions("work")
+    assert "--account" not in relogin.instructions() and "-Account" not in relogin.instructions()
+
+
+def test_instructions_for_an_unknown_os_name_the_account_in_both_commands(monkeypatch):
+    monkeypatch.setattr(relogin.platform, "system", lambda: "Plan9")
+
+    text = relogin.instructions("Work")
+
+    assert "--relogin --account work" in text and "-Relogin -Account work" in text
+
+
+@pytest.mark.parametrize("label", ["w; rm -rf ~", "a b", "$(x)", "рабочий", ""])
+def test_instructions_refuse_an_unsafe_label(label):
+    from telegram_mcp_ag import config
+
+    with pytest.raises(config.ConfigError):
+        relogin.instructions(label)

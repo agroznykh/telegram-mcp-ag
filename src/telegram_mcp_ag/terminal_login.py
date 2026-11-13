@@ -17,6 +17,7 @@ import os
 import sys
 
 import qrcode
+from dotenv import dotenv_values
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 
@@ -26,8 +27,11 @@ from telegram_mcp_ag import config as _config
 QR_MAX_REFRESHES = 10
 PHONE_ATTEMPTS = 3
 
-# Not 2: argparse already exits with 2 on a bad command line.
+# Not 1 (any other failure) or 2 (argparse already exits with 2 on a bad command
+# line): the installers tell these cases apart by the code.
 EXIT_BAD_CREDENTIALS = 3
+EXIT_AMBIGUOUS_ACCOUNT = 4
+EXIT_DECLINED = 5
 
 _BAD_CREDENTIALS_MESSAGE = (
     "Telegram не принял api_id и api_hash. Проверьте их на my.telegram.org/apps "
@@ -38,6 +42,10 @@ _BAD_CREDENTIALS_MESSAGE = (
 
 class LoginFailed(Exception):
     """A login that cannot go on. The message is shown to the user as is."""
+
+
+class LoginDeclined(Exception):
+    """The user said the account that logged in is not the one they meant."""
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +182,30 @@ async def _enter_password(client) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _describe_user(user) -> str:
+    """Name and ``@username`` for the confirmation question -- never the phone."""
+    name = " ".join(part for part in (getattr(user, "first_name", None), getattr(user, "last_name", None)) if part)
+    username = getattr(user, "username", None)
+    parts = [name] if name else []
+    if username:
+        parts.append(f"@{username}")
+    return " ".join(parts) or "имя аккаунта неизвестно"
+
+
+def _confirm_account(who: str) -> bool:
+    """Ask whether this is the account the user meant. Enter means yes.
+
+    The QR code is scanned in whichever account is active in the phone's app, so
+    it is easy to log in a second time to the account that is already set up.
+    """
+    print()
+    print(f"Вы вошли в аккаунт: {who}.")
+    answer = input("Это нужный аккаунт? [Д/н]: ").strip().lower()
+    return answer in ("", "д", "да", "y", "yes")
+
+
 async def _login(api_id: int, api_hash: str, use_qr: bool) -> str:
-    """Run the login and return the session string."""
+    """Run the login, confirm the account and return the session string."""
     client = TelegramClient(StringSession(), api_id, api_hash)
     await client.connect()
     try:
@@ -191,10 +221,42 @@ async def _login(api_id: int, api_hash: str, use_qr: bool) -> str:
                 print("Попробуем войти по номеру телефона.")
         if not authorized:
             await _phone_login(client)
+        try:
+            who = _describe_user(await client.get_me())
+        except Exception:
+            who = "имя аккаунта узнать не удалось"
+        if not _confirm_account(who):
+            # The session exists on Telegram's side already; leaving it would put
+            # an unused device into the account's device list.
+            try:
+                await client.log_out()
+            except Exception:
+                pass
+            raise LoginDeclined()
         # StringSession.save() is an unbound method that works on any Session.
         return StringSession.save(client.session)
     finally:
         await client.disconnect()
+
+
+def _label_arg(text: str) -> str:
+    try:
+        return _config.validate_label(text)
+    except _config.ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _new_label_arg(text: str) -> str:
+    try:
+        return _config.validate_label(text, allow_default=False)
+    except _config.ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _default_arg(text: str):
+    if text.strip().lower() == "none":
+        return None
+    return _label_arg(text)
 
 
 def _parse_args(argv):
@@ -207,12 +269,109 @@ def _parse_args(argv):
         action="store_true",
         help="Сразу входить по номеру телефона, без QR-кода.",
     )
-    return parser.parse_args(argv)
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument(
+        "--account",
+        type=_label_arg,
+        metavar="МЕТКА",
+        help="Войти в аккаунт с этой меткой (или перелогиниться), не трогая остальные.",
+    )
+    modes.add_argument(
+        "--rename-default",
+        type=_new_label_arg,
+        metavar="НОВАЯ",
+        help="Дать метку аккаунту без названия (default).",
+    )
+    modes.add_argument(
+        "--set-default",
+        type=_default_arg,
+        metavar="МЕТКА|none",
+        default=argparse.SUPPRESS,
+        help="Аккаунт по умолчанию; none -- никакого, всегда спрашивать.",
+    )
+    modes.add_argument(
+        "--list-accounts",
+        action="store_true",
+        help="Напечатать метки аккаунтов, по одной в строке (без сети и без секретов).",
+    )
+    args = parser.parse_args(argv)
+    args.set_default_given = hasattr(args, "set_default")
+    if args.phone and (args.rename_default or args.set_default_given or args.list_accounts):
+        parser.error("--phone сочетается только с входом (--account или без него).")
+    return args
+
+
+def _current_env() -> dict:
+    """config.env overlaid with the environment, blank values counting as unset.
+
+    A snapshot taken before ``config.load()``: that drops session strings it cannot
+    read, and a damaged session is still an account to this command -- the one a
+    relogin is meant to replace -- not a reason to pretend the account is absent.
+    """
+    path = _config.CONFIG_PATH
+    env = {k: v for k, v in (dotenv_values(path) if path.exists() else {}).items() if v is not None}
+    env.update({k: v for k, v in os.environ.items() if v.strip()})
+    return env
+
+
+def _run_list_accounts() -> None:
+    env = _current_env()
+    default = _config.default_account(env)
+    for label in _config.configured_labels(env):
+        print(f"{label} (по умолчанию)" if label == default else label)
+
+
+def _run_set_default(label) -> None:
+    try:
+        _config.set_default_account(label, _config.CONFIG_PATH)
+    except _config.ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    print("Аккаунт по умолчанию убран: теперь будем спрашивать." if label is None else f"Аккаунт по умолчанию: {label}.")
+
+
+def _run_rename_default(new_label: str) -> None:
+    try:
+        _config.rename_session(_config.DEFAULT_LABEL, new_label, _config.CONFIG_PATH)
+    except _config.ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
+    print(f"Аккаунт без названия теперь называется {new_label}.")
+
+
+def _target_label(args, env: dict) -> str:
+    """Which account the login is for; refuses to guess among several."""
+    if args.account is not None:
+        return args.account
+    labels = _config.configured_labels(env)
+    if len(labels) >= 2:
+        print(
+            "Аккаунтов несколько: "
+            + ", ".join(labels)
+            + ". Укажите, в какой входить: --account МЕТКА. Ничего не изменено.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_AMBIGUOUS_ACCOUNT)
+    return labels[0] if labels else _config.DEFAULT_LABEL
 
 
 def main(argv=None) -> None:
     args = _parse_args(argv)
 
+    if args.list_accounts:
+        _run_list_accounts()
+        return
+    if args.set_default_given:
+        _run_set_default(args.set_default)
+        return
+    if args.rename_default:
+        _run_rename_default(args.rename_default)
+        return
+
+    # Before load(): refusing to guess must not touch the file, and load() adds
+    # default lines to it.
+    env = _current_env()
+    label = _target_label(args, env)
     try:
         _config.load(_config.CONFIG_PATH)
     except _config.MissingSessionError:
@@ -237,6 +396,9 @@ def main(argv=None) -> None:
     except LoginFailed as exc:
         print(f"\n{exc}", file=sys.stderr)
         sys.exit(1)
+    except LoginDeclined:
+        print("\nХорошо, ничего не сохранено. Запустите вход ещё раз и войдите в нужный аккаунт.", file=sys.stderr)
+        sys.exit(EXIT_DECLINED)
     except (KeyboardInterrupt, EOFError):
         print("\nВход прерван.", file=sys.stderr)
         sys.exit(1)
@@ -244,17 +406,13 @@ def main(argv=None) -> None:
         print(f"\nНе удалось войти в Telegram: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    # A fresh login replaces whatever sessions the file held: on a relogin the
-    # old one is dead, and left beside the new one it would stay in use.
-    _config.clear_session(_config.CONFIG_PATH)
+    # Only this account's key: a relogin replaces its dead session, and the
+    # other accounts' sessions are none of this login's business.
     _config.write_values(
-        {
-            "TELEGRAM_API_ID": str(api_id),
-            "TELEGRAM_API_HASH": api_hash,
-            "TELEGRAM_SESSION_STRING": session_string,
-        },
+        {"TELEGRAM_API_ID": str(api_id), "TELEGRAM_API_HASH": api_hash},
         _config.CONFIG_PATH,
     )
+    _config.write_session(label, session_string, _config.CONFIG_PATH)
     print("\nВход выполнен.")
 
 
