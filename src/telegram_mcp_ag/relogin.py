@@ -7,6 +7,8 @@ so neither has to import the other.
 
 import platform
 
+from telegram_mcp_ag import config as _config
+
 # How to make a client start this server afresh. The installers register it
 # as a local MCP server (claude_desktop_config.json), not as a Claude Desktop
 # extension, so there is no per-server toggle there: the app itself restarts.
@@ -29,15 +31,32 @@ CMD_WINDOWS = (
 )
 
 
-def instructions() -> str:
-    """The command for this machine's OS, or both if the OS is unknown."""
+def _with_account(account):
+    """Canonical, checked label for the command line, or ``None``.
+
+    The label is pasted into a shell command the user will run, so it is checked
+    here again against the allowed characters instead of trusting the caller.
+    """
+    if account is None:
+        return None
+    return _config.validate_label(account)
+
+
+def instructions(account=None) -> str:
+    """The command for this machine's OS, or both if the OS is unknown.
+
+    With ``account`` the command redoes the login of that account only.
+    """
+    label = _with_account(account)
+    mac_linux = CMD_MAC_LINUX if label is None else f"{CMD_MAC_LINUX} --account {label}"
+    windows = CMD_WINDOWS if label is None else f"{CMD_WINDOWS} -Account {label}"
     system = platform.system()
     if system == "Darwin" or system == "Linux":
-        return f"Выполните на этой машине в терминале: {CMD_MAC_LINUX}"
+        return f"Выполните на этой машине в терминале: {mac_linux}"
     if system == "Windows":
-        return f"Выполните на этой машине в PowerShell: {CMD_WINDOWS}"
+        return f"Выполните на этой машине в PowerShell: {windows}"
     return (
         "Не удалось определить ОС этой машины, выберите нужную команду -- "
-        f"macOS/Linux (терминал): {CMD_MAC_LINUX} -- "
-        f"Windows (PowerShell): {CMD_WINDOWS}"
+        f"macOS/Linux (терминал): {mac_linux} -- "
+        f"Windows (PowerShell): {windows}"
     )

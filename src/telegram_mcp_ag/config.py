@@ -35,6 +35,151 @@ class MissingSessionError(ConfigError):
     """
 
 
+DEFAULT_LABEL = "default"
+MAX_LABEL_LENGTH = 32
+DEFAULT_ACCOUNT_KEY = "TELEGRAM_DEFAULT_ACCOUNT"
+_UNNAMED_STRING_KEY = "TELEGRAM_SESSION_STRING"
+_UNNAMED_NAME_KEY = "TELEGRAM_SESSION_NAME"
+# ASCII only: str.isalnum() would let Cyrillic or other scripts through, and the
+# label ends up in an environment variable name and in a shell command.
+_LABEL_RE = re.compile(r"[A-Za-z0-9_-]{1,%d}" % MAX_LABEL_LENGTH, re.ASCII)
+
+
+def normalize_label(label: str) -> str:
+    """Fold a label to its canonical form: lowercase, ``-`` as ``_``.
+
+    The same rule as ``telegram_mcp.account_labels.canonical_account_label``
+    (tests/test_config.py compares them): the upstream runtime folds the suffix
+    of a key the same way, so every spelling of one label has to meet here too.
+    Does not check that the label is allowed -- see :func:`validate_label`.
+    """
+    return label.strip().lower().replace("-", "_")
+
+
+def validate_label(label: str, *, allow_default: bool = True) -> str:
+    """Return the canonical form of ``label`` or raise :class:`ConfigError`.
+
+    An allowed label is Latin letters, digits, ``_`` and ``-``, up to 32
+    characters. The strictness is about safety, not taste: the label becomes part
+    of a ``config.env`` key and of the relogin command shown to the user. The
+    message is shown as it is, so it says what to do instead.
+    """
+    text = label.strip()
+    if not _LABEL_RE.fullmatch(text):
+        raise ConfigError(
+            f"Метка аккаунта {text!r} не подходит: только латинские буквы, цифры, "
+            f"«_» и «-», не длиннее {MAX_LABEL_LENGTH} символов. Назовите латиницей, "
+            "например «рабочий» -> work, «личный» -> personal."
+        )
+    canonical = normalize_label(text)
+    if canonical == DEFAULT_LABEL and not allow_default:
+        raise ConfigError(
+            f"Метка {DEFAULT_LABEL!r} зарезервирована за аккаунтом без названия. "
+            "Выберите другую, например personal или work."
+        )
+    return canonical
+
+
+def session_key(label: str) -> str:
+    """The ``config.env`` key that holds the session string of ``label``."""
+    canonical = validate_label(label)
+    if canonical == DEFAULT_LABEL:
+        return _UNNAMED_STRING_KEY
+    return SESSION_STRING_PREFIX + canonical.upper()
+
+
+def _key_kind_and_suffix(key: str):
+    """Split a session key into ``("string" | "name", suffix)``, or ``None``.
+
+    The suffix is ``None`` for the unnamed keys and may be empty or malformed for
+    a hand-written one: the caller decides what that means.
+    """
+    key = key.strip()
+    if key == _UNNAMED_STRING_KEY:
+        return "string", None
+    if key == _UNNAMED_NAME_KEY:
+        return "name", None
+    if key.startswith(SESSION_STRING_PREFIX):
+        return "string", key[len(SESSION_STRING_PREFIX) :]
+    if key.startswith(SESSION_NAME_PREFIX):
+        return "name", key[len(SESSION_NAME_PREFIX) :]
+    return None
+
+
+def _label_of_key(key: str):
+    """Canonical label a session key belongs to; ``None`` if it is not a session
+    key or its label is not allowed."""
+    parsed = _key_kind_and_suffix(key)
+    if parsed is None:
+        return None
+    suffix = parsed[1]
+    if suffix is None:
+        return DEFAULT_LABEL
+    try:
+        return validate_label(suffix)
+    except ConfigError:
+        return None
+
+
+def configured_labels(env) -> list:
+    """Labels of the accounts that have a session in ``env``, ``default`` first.
+
+    Counts both ``..._STRING`` and ``..._NAME`` keys, skips blank values and
+    labels that are not allowed. For the CLI and the installers: the server
+    counts accounts by what the upstream runtime built (``runtime.clients``).
+    """
+    labels = {
+        label
+        for key, value in env.items()
+        if value is not None and str(value).strip() and (label := _label_of_key(key)) is not None
+    }
+    return sorted(labels, key=lambda label: (label != DEFAULT_LABEL, label))
+
+
+def is_multi(env) -> bool:
+    return len(configured_labels(env)) >= 2
+
+
+def read_env(config_path: Optional[Path] = None) -> dict:
+    """``config.env`` overlaid with the process environment, blank values unset.
+
+    The same precedence ``load()`` applies, as a plain dict and without touching
+    ``os.environ`` or the file: for the commands that only need to know which
+    accounts exist. Unlike after ``load()``, session strings Telethon cannot read
+    are still here -- a damaged session is an account the user has to replace.
+    """
+    config_path = CONFIG_PATH if config_path is None else config_path
+    env = {}
+    if config_path.exists():
+        env = {k: v for k, v in dotenv_values(config_path).items() if v is not None}
+    env.update({k: v for k, v in os.environ.items() if v.strip()})
+    return env
+
+
+def default_account(env):
+    """The label ``TELEGRAM_DEFAULT_ACCOUNT`` names, or ``None``.
+
+    Blank means "not set" like every other setting. A label with no session
+    behind it is ignored with a warning: it would otherwise send every call
+    without ``account`` to an account that does not exist.
+    """
+    value = str(env.get(DEFAULT_ACCOUNT_KEY) or "").strip()
+    if not value:
+        return None
+    try:
+        label = validate_label(value)
+    except ConfigError:
+        label = None
+    if label is None or label not in configured_labels(env):
+        print(
+            f"Warning: {DEFAULT_ACCOUNT_KEY} names an account that is not configured "
+            "and was ignored.",
+            file=sys.stderr,
+        )
+        return None
+    return label
+
+
 def _warn_if_not_locked_down(path: Path) -> None:
     if os.name != "posix":
         return
@@ -47,6 +192,16 @@ def _warn_if_not_locked_down(path: Path) -> None:
         )
 
 
+def _is_readable_session(value: str) -> bool:
+    from telethon.sessions import StringSession
+
+    try:
+        StringSession(value)
+    except Exception:
+        return False
+    return True
+
+
 def _drop_unreadable_session_strings(env: dict) -> None:
     """Remove session strings Telethon cannot parse, warning about each.
 
@@ -55,21 +210,45 @@ def _drop_unreadable_session_strings(env: dict) -> None:
     our error handling runs. Dropping it here turns that crash into the ordinary
     "no session" path, which offers a fresh QR login.
     """
-    from telethon.sessions import StringSession
-
     for key in [k for k in env if k == "TELEGRAM_SESSION_STRING" or k.startswith(SESSION_STRING_PREFIX)]:
         value = str(env.get(key, "")).strip()
         if not value:
             continue
-        try:
-            StringSession(value)
-        except Exception:
+        if not _is_readable_session(value):
             print(
                 f"Warning: {key} is not a readable Telegram session string and was "
                 "ignored. Log in again to replace it.",
                 file=sys.stderr,
             )
             env.pop(key, None)
+
+
+def _drop_unusable_session_keys(env: dict) -> None:
+    """Remove session keys the upstream runtime must not see, warning about each.
+
+    Two kinds. A key whose label is not allowed (for instance typed in by hand):
+    the label would end up in the relogin command, so it is never an account here.
+    And ``TELEGRAM_SESSION_STRING_DEFAULT`` next to the unnamed key: both mean the
+    same account and the upstream would silently pick one of them.
+    """
+    # Readable, not merely non-blank: next to a damaged unnamed string the
+    # ..._DEFAULT one is the only working copy of the account and must stay.
+    unnamed = str(env.get(_UNNAMED_STRING_KEY, "")).strip()
+    unnamed_in_use = bool(unnamed) and _is_readable_session(unnamed)
+    for key in list(env):
+        parsed = _key_kind_and_suffix(key)
+        if parsed is None or parsed[1] is None:
+            continue
+        label = _label_of_key(key)
+        if label is None:
+            reason = "its account label is not allowed"
+        elif label == DEFAULT_LABEL and parsed[0] == "string" and unnamed_in_use:
+            reason = f"it duplicates {_UNNAMED_STRING_KEY}"
+        else:
+            continue
+        if str(env.get(key, "")).strip():
+            print(f"Warning: {key!r} was ignored: {reason}.", file=sys.stderr)
+        env.pop(key, None)
 
 
 def _has_session(env: dict) -> bool:
@@ -94,6 +273,33 @@ def _quote(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _read_lines(config_path: Path) -> list:
+    if not config_path.exists():
+        return []
+    return config_path.read_text(encoding="utf-8").splitlines()
+
+
+def _write_lines(config_path: Path, lines: list) -> None:
+    """Rewrite ``config.env`` in place, owner-only.
+
+    In place (``O_TRUNC``) and not via a temporary file plus ``os.replace``: on
+    Windows a new file would lose the ACL the installer gave this one.
+    """
+    config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # os.open with 0600 rather than write-then-chmod: the latter leaves the
+    # credentials world-readable for the moment in between.
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + ("\n" if lines else ""))
+    if os.name == "posix":
+        # A pre-existing file keeps its old mode through os.open.
+        os.chmod(config_path, 0o600)
+
+
+def _line_key(line: str) -> str:
+    return line.split("=", 1)[0].strip()
+
+
 def write_values(values: dict, config_path: Optional[Path] = None) -> None:
     """Merge ``values`` into ``config.env``, keeping the file owner-only.
 
@@ -104,33 +310,70 @@ def write_values(values: dict, config_path: Optional[Path] = None) -> None:
     # Resolved here rather than as a default argument so that CONFIG_PATH stays
     # a single source of truth that tests and callers can redirect.
     config_path = CONFIG_PATH if config_path is None else config_path
-    config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-    lines = []
-    if config_path.exists():
-        lines = config_path.read_text(encoding="utf-8").splitlines()
+    lines = _read_lines(config_path)
 
     remaining = dict(values)
     for index, line in enumerate(lines):
-        key = line.split("=", 1)[0].strip()
+        key = _line_key(line)
         if key in remaining:
             lines[index] = f"{key}={_quote(str(remaining.pop(key)))}"
     for key, value in remaining.items():
         lines.append(f"{key}={_quote(str(value))}")
 
-    # os.open with 0600 rather than write-then-chmod: the latter leaves the
-    # credentials world-readable for the moment in between.
-    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
-
-    if os.name == "posix":
-        # A pre-existing file keeps its old mode through os.open.
-        os.chmod(config_path, 0o600)
+    _write_lines(config_path, lines)
 
 
-def clear_session(config_path: Optional[Path] = None) -> bool:
-    """Drop every session key from ``config.env``. Returns whether anything changed.
+def _is_session_line(line: str, label: Optional[str]) -> bool:
+    """Whether ``line`` holds a session key -- of ``label`` only, if one is given.
+
+    Compared by canonical label, so ``TELEGRAM_SESSION_STRING_Work`` typed in by
+    hand counts as the ``work`` account like the key we write.
+    """
+    if label is None:
+        return _key_kind_and_suffix(_line_key(line)) is not None
+    return _label_of_key(_line_key(line)) == label
+
+
+def write_session(
+    label: str, value: str, config_path: Optional[Path] = None, extra_values: Optional[dict] = None
+) -> None:
+    """Save the session string of ``label``, leaving every other account alone.
+
+    A key of the same account spelled differently (a hand-written lowercase
+    suffix) is dropped, so a relogin replaces the session instead of leaving
+    a second, dead one beside it for the upstream to pick. ``extra_values``
+    (for instance api_id/api_hash) go into the same single write: two writes in
+    a row could be torn apart by a crash in between.
+    """
+    canonical = validate_label(label)
+    key = session_key(canonical)
+    config_path = CONFIG_PATH if config_path is None else config_path
+    remaining = dict(extra_values or {})
+
+    lines = []
+    placed = False
+    for line in _read_lines(config_path):
+        line_key = _line_key(line)
+        parsed = _key_kind_and_suffix(line_key)
+        if parsed is not None and parsed[0] == "string" and _label_of_key(line_key) == canonical:
+            if line_key == key and not placed:
+                lines.append(f"{key}={_quote(value)}")
+                placed = True
+            continue
+        if line_key in remaining:
+            line = f"{line_key}={_quote(str(remaining.pop(line_key)))}"
+        lines.append(line)
+    if not placed:
+        lines.append(f"{key}={_quote(value)}")
+    lines.extend(f"{k}={_quote(str(v))}" for k, v in remaining.items())
+    _write_lines(config_path, lines)
+
+
+def clear_session(config_path: Optional[Path] = None, label: Optional[str] = None) -> bool:
+    """Drop session keys from ``config.env``. Returns whether anything changed.
+
+    With ``label`` only that account's keys go; without, every session key (the
+    single-account mode, where the one dead session is the whole picture).
 
     Called when Telegram reports the session as revoked: a dead session left
     in place would make every future launch skip login-only mode and hand the
@@ -141,27 +384,82 @@ def clear_session(config_path: Optional[Path] = None) -> bool:
     config_path = CONFIG_PATH if config_path is None else config_path
     if not config_path.exists():
         return False
+    canonical = None if label is None else validate_label(label)
 
-    lines = config_path.read_text(encoding="utf-8").splitlines()
-
-    def _is_session_key(line: str) -> bool:
-        key = line.split("=", 1)[0].strip()
-        return (
-            key in ("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME")
-            or key.startswith(SESSION_STRING_PREFIX)
-            or key.startswith(SESSION_NAME_PREFIX)
-        )
-
-    kept = [line for line in lines if not _is_session_key(line)]
+    lines = _read_lines(config_path)
+    kept = [line for line in lines if not _is_session_line(line, canonical)]
     if len(kept) == len(lines):
         return False
 
-    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write("\n".join(kept) + ("\n" if kept else ""))
-    if os.name == "posix":
-        os.chmod(config_path, 0o600)
+    _write_lines(config_path, kept)
     return True
+
+
+def rename_session(old: str, new: str, config_path: Optional[Path] = None) -> None:
+    """Move the session of ``old`` under the label ``new``, in one write.
+
+    ``TELEGRAM_DEFAULT_ACCOUNT`` follows if it named ``old``. Refuses, changing
+    nothing, when ``old`` has no session or ``new`` already has one: silently
+    overwriting a live session would lose an account.
+    """
+    old_label = validate_label(old)
+    new_label = validate_label(new, allow_default=False)
+    config_path = CONFIG_PATH if config_path is None else config_path
+
+    values = dotenv_values(config_path) if config_path.exists() else {}
+    old_keys = [(k, v) for k, v in values.items() if _label_of_key(k) == old_label]
+    if any(_key_kind_and_suffix(k)[0] == "name" and v and str(v).strip() for k, v in old_keys):
+        raise ConfigError(
+            f"У аккаунта {old_label!r} сессия хранится в файле, а не в строке: "
+            "такой аккаунт переименовать нельзя."
+        )
+    value = next((str(v).strip() for _, v in old_keys if v is not None and str(v).strip()), "")
+    if not value:
+        raise ConfigError(f"У аккаунта {old_label!r} нет сохранённой сессии, переименовывать нечего.")
+    if new_label in configured_labels(read_env(config_path)):
+        raise ConfigError(f"Аккаунт с меткой {new_label!r} уже есть.")
+
+    new_key = session_key(new_label)
+    default_was_old = normalize_label(str(values.get(DEFAULT_ACCOUNT_KEY) or "")) == old_label
+    lines = []
+    placed = False
+    for line in _read_lines(config_path):
+        line_key = _line_key(line)
+        label = _label_of_key(line_key)
+        if label == old_label or label == new_label:
+            # Both ends of the move: the old keys go, blank leftovers of the new
+            # label go too, and the value lands where the first old key stood.
+            if not placed and label == old_label:
+                lines.append(f"{new_key}={_quote(value)}")
+                placed = True
+            continue
+        if line_key == DEFAULT_ACCOUNT_KEY and default_was_old:
+            line = f"{DEFAULT_ACCOUNT_KEY}={new_label}"
+        lines.append(line)
+    if not placed:
+        lines.append(f"{new_key}={_quote(value)}")
+    _write_lines(config_path, lines)
+
+
+def set_default_account(label: Optional[str], config_path: Optional[Path] = None) -> None:
+    """Set ``TELEGRAM_DEFAULT_ACCOUNT``, or remove it when ``label`` is ``None``.
+
+    Refuses a label that has no session in the file: such a default would be
+    ignored with a warning at every start.
+    """
+    config_path = CONFIG_PATH if config_path is None else config_path
+    if label is None:
+        lines = _read_lines(config_path)
+        kept = [line for line in lines if _line_key(line) != DEFAULT_ACCOUNT_KEY]
+        if len(kept) != len(lines):
+            _write_lines(config_path, kept)
+        return
+    canonical = validate_label(label)
+    labels = configured_labels(read_env(config_path))
+    if canonical not in labels:
+        known = ", ".join(labels) or "ни одного"
+        raise ConfigError(f"Аккаунта {canonical!r} нет в настройках. Сейчас есть: {known}.")
+    write_values({DEFAULT_ACCOUNT_KEY: canonical}, config_path)
 
 
 DEFAULT_EXPOSED_TOOLS = "read-only"
@@ -361,6 +659,7 @@ def load(config_path: Path = CONFIG_PATH) -> None:
             f"TELEGRAM_API_ID must be a number, got {os.environ['TELEGRAM_API_ID']!r}."
         ) from None
 
+    _drop_unusable_session_keys(os.environ)
     _drop_unreadable_session_strings(os.environ)
 
     if not _has_session(os.environ):

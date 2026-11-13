@@ -345,3 +345,22 @@ def test_no_password_prompt_command_on_a_headless_box(monkeypatch):
     monkeypatch.setattr(login.shutil, "which", lambda name: None)
 
     assert login._password_prompt_command() is None
+
+
+@pytest.mark.asyncio
+async def test_chat_login_only_ever_writes_the_unnamed_key(registered, monkeypatch):
+    # Login in chat is the single-account path (it starts only when no session
+    # exists at all): a second account is added by the installer, never here.
+    tools, client, config_path = registered
+    monkeypatch.setenv("TELEGRAM_API_ID", "123")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "hash")
+
+    await tools["telegram_login_start"]()
+    client.qr.result.set_result(FakeUser())
+    await tools["telegram_login_check"]()
+
+    from dotenv import dotenv_values
+
+    values = dotenv_values(config_path)
+    assert config.configured_labels(values) == ["default"]
+    assert [k for k in values if k.startswith("TELEGRAM_SESSION")] == ["TELEGRAM_SESSION_STRING"]
