@@ -410,7 +410,7 @@ CI `install` останавливается до входа в Telegram.
 **Ревью безопасности:** нет; ревью кода отдельно проверяет, что не осталось путей опроса
 всех аккаунтов.
 
-**Итог реализации:** PR открыт (ветка `multi-account-02-account-selection`, от `main` `ac7e0f5`).
+**Итог реализации:** PR [#19](https://github.com/agroznykh/telegram-mcp-ag/pull/19) открыт (ветка `multi-account-02-account-selection`, от `main` `ac7e0f5`).
 
 - `accounts.py` (новый): `with_account(readonly)` вместо апстримного, `resolve()`, `default_label()`,
   `ContextVar current_account`, `wrap_tool()`, `unwrapped_tools()` / `ensure_all_wrapped()`. Решение — в
