@@ -21,6 +21,7 @@ from telegram_mcp import runtime as _runtime
 from telegram_mcp.account_labels import canonical_account_label
 
 from telegram_mcp_ag import config as _config
+from telegram_mcp_ag import connections as _connections
 
 DEFAULT_ACCOUNT_ENV = "TELEGRAM_DEFAULT_ACCOUNT"
 
@@ -104,8 +105,9 @@ def with_account(readonly: bool = False):
     The wrapped function must take ``account`` as a keyword (it is how FastMCP
     passes it) and is always called with the canonical label of one account.
     With a single account that is the only account, so nothing changes for a
-    user who has one. A text instead of a call is a normal tool answer: every
-    tool this wraps returns ``str``.
+    user who has one. The chosen account is connected here, before the call, if
+    it is not yet. A text instead of a call is a normal tool answer: every tool
+    this wraps returns ``str``.
     """
 
     def decorator(fn: Callable):
@@ -116,6 +118,10 @@ def with_account(readonly: bool = False):
                 return answer
             if label is not None:
                 kwargs["account"] = label
+                # Connected on first use, one account at a time (connections.py).
+                unavailable = await _connections.ensure_account_ready(label)
+                if unavailable is not None:
+                    return unavailable
             token = current_account.set(label)
             try:
                 return await fn(*args, **kwargs)

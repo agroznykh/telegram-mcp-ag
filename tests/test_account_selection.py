@@ -48,6 +48,12 @@ from telegram_mcp import runtime
 from telegram_mcp.tools import chats, events
 runtime._apply_exposed_tools_mode()
 
+# The account is connected before a call; here that connection is a no-op.
+from telegram_mcp import runner
+async def connected(label, client):
+    return None
+runner._connect_authorized_client = connected
+
 reached = []
 def fake_get_client(account=None):
     reached.append(account)
@@ -335,6 +341,11 @@ def test_current_account_is_set_for_the_duration_of_a_call():
     script = """
 import asyncio, json
 from telegram_mcp_ag import server, accounts
+from telegram_mcp import runner
+
+async def connected(label, client):
+    return None
+runner._connect_authorized_client = connected
 
 seen = []
 

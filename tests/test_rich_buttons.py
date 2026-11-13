@@ -21,7 +21,7 @@ os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "test-hash")
 os.environ.setdefault("TELEGRAM_SESSION_STRING", _dummy_session_string())
 
-from telegram_mcp_ag import rich_buttons  # noqa: E402
+from telegram_mcp_ag import connections, rich_buttons  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +102,8 @@ def client(monkeypatch):
     async def _entity(chat_id, _):
         return chat_id
 
+    # The account is connected before a call (connections.py); here it already is.
+    monkeypatch.setattr(connections, "_ready", {"default"})
     monkeypatch.setattr(rich_buttons, "get_client", lambda account=None: fake)
     monkeypatch.setattr(rich_buttons, "ensure_connected", _connected)
     monkeypatch.setattr(rich_buttons, "resolve_entity", _entity)
