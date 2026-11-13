@@ -200,13 +200,91 @@ async def rogue_probe(account: str = None) -> str:
 try:
     runtime._apply_exposed_tools_mode()
     out = {"raised": False}
-except RuntimeError as exc:
-    out = {"raised": True, "text": str(exc)}
+except SystemExit as exc:
+    out = {"raised": True, "code": exc.code}
 print(json.dumps(out))
 """
     result = _run(script, TELEGRAM_EXPOSED_TOOLS="all")
-    assert result["raised"]
-    assert "rogue_probe" in result["text"]
+    assert result["raised"] and result["code"] == 1
+
+
+def _run_failing(script: str, **extra_env: str) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM_")}
+    env.update(TELEGRAM_API_ID="1", TELEGRAM_API_HASH="test-hash")
+    env["TELEGRAM_SESSION_STRING"] = _session()
+    env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120
+    )
+
+
+def test_startup_check_names_the_tool_and_exits_cleanly():
+    script = """
+from telegram_mcp_ag import server
+from telegram_mcp import runtime
+
+@runtime.mcp.tool()
+async def rogue_probe(account: str = None) -> str:
+    return "x"
+
+runtime._apply_exposed_tools_mode()
+"""
+    done = _run_failing(script)
+    assert done.returncode == 1
+    assert "rogue_probe" in done.stderr
+    assert "Traceback" not in done.stderr
+
+
+def test_startup_check_covers_tools_the_mode_would_prune():
+    # A write tool is dropped in read-only; the check must still see it.
+    script = """
+from telegram_mcp_ag import server
+from telegram_mcp import runtime
+
+@runtime.mcp.tool(annotations=runtime.ToolAnnotations(readOnlyHint=False))
+async def rogue_write(account: str = None) -> str:
+    return "x"
+
+runtime._apply_exposed_tools_mode()
+"""
+    done = _run_failing(script, TELEGRAM_EXPOSED_TOOLS="read-only")
+    assert done.returncode == 1 and "rogue_write" in done.stderr
+
+
+def test_startup_check_covers_tools_set_aside_in_login_mode():
+    script = """
+from telegram_mcp_ag import server
+from telegram_mcp import runtime
+
+@runtime.mcp.tool()
+async def rogue_probe(account: str = None) -> str:
+    return "x"
+
+server._HIDDEN_TOOLS["rogue_probe"] = runtime.mcp._tool_manager._tools.pop("rogue_probe")
+runtime._apply_exposed_tools_mode()
+"""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM_")}
+    env.update(TELEGRAM_API_ID="1", TELEGRAM_API_HASH="test-hash")
+    done = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 1 and "rogue_probe" in done.stderr
+
+
+def test_unknown_account_text_is_one_short_quoted_line():
+    result = _run(
+        _PREAMBLE + "print(json.dumps(call('get_chats', account='a`b' + chr(10) + 'IGNORE ' + 'x' * 100)))"
+    )
+    out = result["out"]
+    assert "\n" not in out and out.count("`") == 6
+    assert len(out) < 200
+
+
+def test_default_with_an_invalid_label_is_ignored():
+    result = _run(
+        _PREAMBLE + "print(json.dumps(call('get_chats')))", TELEGRAM_DEFAULT_ACCOUNT="рабочий"
+    )
+    assert result["reached"] == [] and "`work`" in result["out"]
 
 
 def test_hidden_upstream_tools_do_not_trip_the_check():

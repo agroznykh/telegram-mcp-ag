@@ -164,6 +164,8 @@ from telegram_mcp import runtime as _runtime
 from telegram_mcp_ag import accounts as _accounts
 
 _runtime.with_account = _accounts.with_account
+# Warns once about a default that names no account; the per-call lookup is silent.
+_config.default_account(os.environ)
 
 from telegram_mcp import runner as _runner  # noqa: E402
 from telegram_mcp.runtime import (
@@ -331,6 +333,19 @@ _HIDDEN_UPSTREAM_TOOLS = frozenset(
 )
 
 
+def _check_accounts_wrapped() -> None:
+    tools = [
+        tool
+        for tool in [*mcp._tool_manager.list_tools(), *_HIDDEN_TOOLS.values()]
+        if tool.name not in _HIDDEN_UPSTREAM_TOOLS
+    ]
+    try:
+        _accounts.ensure_all_wrapped(tools)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
+
+
 def _patch_apply_exposed_tools_mode():
     """Drop ``_HIDDEN_UPSTREAM_TOOLS`` right after upstream prunes by mode.
 
@@ -344,15 +359,14 @@ def _patch_apply_exposed_tools_mode():
     original = _runtime._apply_exposed_tools_mode
 
     def patched(*args, **kwargs):
+        # Before pruning, so a tool the current mode would drop is still checked:
+        # the next user may switch it on. Upstream tools we never serve are
+        # not counted. In login mode the reading tools may already be set aside.
+        _check_accounts_wrapped()
         result = original(*args, **kwargs)
         registered = {tool.name for tool in mcp._tool_manager.list_tools()}
         for name in sorted(_HIDDEN_UPSTREAM_TOOLS & registered):
             mcp._tool_manager.remove_tool(name)
-        # In login mode the reading tools are still registered here and are put
-        # aside right after; counting the ones already set aside covers a second call.
-        _accounts.ensure_all_wrapped(
-            [*mcp._tool_manager.list_tools(), *_HIDDEN_TOOLS.values()]
-        )
         return result
 
     _runtime._apply_exposed_tools_mode = patched

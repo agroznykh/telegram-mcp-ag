@@ -20,6 +20,8 @@ from typing import Callable, Iterable, Optional
 from telegram_mcp import runtime as _runtime
 from telegram_mcp.account_labels import canonical_account_label
 
+from telegram_mcp_ag import config as _config
+
 DEFAULT_ACCOUNT_ENV = "TELEGRAM_DEFAULT_ACCOUNT"
 
 # Set on every function this module returns; the startup check looks for it.
@@ -41,15 +43,26 @@ def _labels_text(labels: Iterable[str]) -> str:
 def default_label() -> Optional[str]:
     """The configured default account, if it is one of the running accounts.
 
-    A blank value is "not set". A label that names no running account is ignored
-    (``config.load`` has already warned about it), so a stale default can never
-    send calls to an account that does not exist.
+    Same reading as ``config.default_account`` (blank is "not set", the label must
+    be a valid one), but silent: that function warns, and it does so once at
+    startup (see server.py) rather than on every call. A label that names no
+    running account is ignored, so a stale default can never send calls to an
+    account that does not exist.
     """
     value = os.environ.get(DEFAULT_ACCOUNT_ENV, "").strip()
     if not value:
         return None
-    label = canonical_account_label(value)
+    try:
+        label = _config.validate_label(value)
+    except _config.ConfigError:
+        return None
     return label if label in _runtime.clients else None
+
+
+def _quoted(value: object) -> str:
+    """A caller-supplied label for an answer: one short line, nothing that breaks the quoting."""
+    text = " ".join(str(value).split()).replace("`", "'")
+    return text if len(text) <= 40 else text[:40] + "…"
 
 
 def resolve(account: Optional[str]) -> tuple[Optional[str], Optional[str]]:
@@ -59,9 +72,11 @@ def resolve(account: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         label = canonical_account_label(str(account))
         if label in _runtime.clients:
             return label, None
-        return None, f"Нет аккаунта `{account}`. Есть: {_labels_text(labels)}."
-    if len(labels) <= 1:
-        return (labels[0] if labels else None), None
+        return None, f"Нет аккаунта `{_quoted(account)}`. Есть: {_labels_text(labels)}."
+    if not labels:
+        return None, "Нет подключённых аккаунтов Telegram."
+    if len(labels) == 1:
+        return labels[0], None
     default = default_label()
     if default is not None:
         return default, None
