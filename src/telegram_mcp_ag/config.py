@@ -140,6 +140,22 @@ def is_multi(env) -> bool:
     return len(configured_labels(env)) >= 2
 
 
+def read_env(config_path: Optional[Path] = None) -> dict:
+    """``config.env`` overlaid with the process environment, blank values unset.
+
+    The same precedence ``load()`` applies, as a plain dict and without touching
+    ``os.environ`` or the file: for the commands that only need to know which
+    accounts exist. Unlike after ``load()``, session strings Telethon cannot read
+    are still here -- a damaged session is an account the user has to replace.
+    """
+    config_path = CONFIG_PATH if config_path is None else config_path
+    env = {}
+    if config_path.exists():
+        env = {k: v for k, v in dotenv_values(config_path).items() if v is not None}
+    env.update({k: v for k, v in os.environ.items() if v.strip()})
+    return env
+
+
 def default_account(env):
     """The label ``TELEGRAM_DEFAULT_ACCOUNT`` names, or ``None``.
 
@@ -176,6 +192,16 @@ def _warn_if_not_locked_down(path: Path) -> None:
         )
 
 
+def _is_readable_session(value: str) -> bool:
+    from telethon.sessions import StringSession
+
+    try:
+        StringSession(value)
+    except Exception:
+        return False
+    return True
+
+
 def _drop_unreadable_session_strings(env: dict) -> None:
     """Remove session strings Telethon cannot parse, warning about each.
 
@@ -184,15 +210,11 @@ def _drop_unreadable_session_strings(env: dict) -> None:
     our error handling runs. Dropping it here turns that crash into the ordinary
     "no session" path, which offers a fresh QR login.
     """
-    from telethon.sessions import StringSession
-
     for key in [k for k in env if k == "TELEGRAM_SESSION_STRING" or k.startswith(SESSION_STRING_PREFIX)]:
         value = str(env.get(key, "")).strip()
         if not value:
             continue
-        try:
-            StringSession(value)
-        except Exception:
+        if not _is_readable_session(value):
             print(
                 f"Warning: {key} is not a readable Telegram session string and was "
                 "ignored. Log in again to replace it.",
@@ -209,7 +231,10 @@ def _drop_unusable_session_keys(env: dict) -> None:
     And ``TELEGRAM_SESSION_STRING_DEFAULT`` next to the unnamed key: both mean the
     same account and the upstream would silently pick one of them.
     """
-    unnamed_in_use = bool(str(env.get(_UNNAMED_STRING_KEY, "")).strip())
+    # Readable, not merely non-blank: next to a damaged unnamed string the
+    # ..._DEFAULT one is the only working copy of the account and must stay.
+    unnamed = str(env.get(_UNNAMED_STRING_KEY, "")).strip()
+    unnamed_in_use = bool(unnamed) and _is_readable_session(unnamed)
     for key in list(env):
         parsed = _key_kind_and_suffix(key)
         if parsed is None or parsed[1] is None:
@@ -309,16 +334,21 @@ def _is_session_line(line: str, label: Optional[str]) -> bool:
     return _label_of_key(_line_key(line)) == label
 
 
-def write_session(label: str, value: str, config_path: Optional[Path] = None) -> None:
+def write_session(
+    label: str, value: str, config_path: Optional[Path] = None, extra_values: Optional[dict] = None
+) -> None:
     """Save the session string of ``label``, leaving every other account alone.
 
     A key of the same account spelled differently (a hand-written lowercase
     suffix) is dropped, so a relogin replaces the session instead of leaving
-    a second, dead one beside it for the upstream to pick.
+    a second, dead one beside it for the upstream to pick. ``extra_values``
+    (for instance api_id/api_hash) go into the same single write: two writes in
+    a row could be torn apart by a crash in between.
     """
     canonical = validate_label(label)
     key = session_key(canonical)
     config_path = CONFIG_PATH if config_path is None else config_path
+    remaining = dict(extra_values or {})
 
     lines = []
     placed = False
@@ -330,9 +360,12 @@ def write_session(label: str, value: str, config_path: Optional[Path] = None) ->
                 lines.append(f"{key}={_quote(value)}")
                 placed = True
             continue
+        if line_key in remaining:
+            line = f"{line_key}={_quote(str(remaining.pop(line_key)))}"
         lines.append(line)
     if not placed:
         lines.append(f"{key}={_quote(value)}")
+    lines.extend(f"{k}={_quote(str(v))}" for k, v in remaining.items())
     _write_lines(config_path, lines)
 
 
@@ -374,21 +407,16 @@ def rename_session(old: str, new: str, config_path: Optional[Path] = None) -> No
     config_path = CONFIG_PATH if config_path is None else config_path
 
     values = dotenv_values(config_path) if config_path.exists() else {}
-    value = next(
-        (
-            str(v).strip()
-            for k, v in values.items()
-            if v is not None
-            and _key_kind_and_suffix(k) is not None
-            and _key_kind_and_suffix(k)[0] == "string"
-            and _label_of_key(k) == old_label
-            and str(v).strip()
-        ),
-        "",
-    )
+    old_keys = [(k, v) for k, v in values.items() if _label_of_key(k) == old_label]
+    if any(_key_kind_and_suffix(k)[0] == "name" and v and str(v).strip() for k, v in old_keys):
+        raise ConfigError(
+            f"У аккаунта {old_label!r} сессия хранится в файле, а не в строке: "
+            "такой аккаунт переименовать нельзя."
+        )
+    value = next((str(v).strip() for _, v in old_keys if v is not None and str(v).strip()), "")
     if not value:
         raise ConfigError(f"У аккаунта {old_label!r} нет сохранённой сессии, переименовывать нечего.")
-    if new_label in configured_labels(values):
+    if new_label in configured_labels(read_env(config_path)):
         raise ConfigError(f"Аккаунт с меткой {new_label!r} уже есть.")
 
     new_key = session_key(new_label)
@@ -427,9 +455,9 @@ def set_default_account(label: Optional[str], config_path: Optional[Path] = None
             _write_lines(config_path, kept)
         return
     canonical = validate_label(label)
-    values = dotenv_values(config_path) if config_path.exists() else {}
-    if canonical not in configured_labels(values):
-        known = ", ".join(configured_labels(values)) or "ни одного"
+    labels = configured_labels(read_env(config_path))
+    if canonical not in labels:
+        known = ", ".join(labels) or "ни одного"
         raise ConfigError(f"Аккаунта {canonical!r} нет в настройках. Сейчас есть: {known}.")
     write_values({DEFAULT_ACCOUNT_KEY: canonical}, config_path)
 

@@ -823,3 +823,70 @@ def test_blank_default_account_in_the_environment_is_not_set(monkeypatch, tmp_pa
     env = {**os.environ, "TELEGRAM_SESSION_STRING": "a", "TELEGRAM_SESSION_STRING_WORK": "b"}
 
     assert config.default_account(env) is None
+
+
+def test_default_key_is_kept_when_the_unnamed_string_is_unreadable(tmp_path, capsys):
+    good = _valid_session_string()
+    config_path = _write_config(
+        tmp_path / "config.env",
+        TELEGRAM_API_ID="1",
+        TELEGRAM_API_HASH="hash",
+        TELEGRAM_SESSION_STRING="garbage",
+        TELEGRAM_SESSION_STRING_DEFAULT=good,
+    )
+    config_path.chmod(0o600)
+
+    config.load(config_path)
+
+    assert os.environ["TELEGRAM_SESSION_STRING_DEFAULT"] == good
+    assert "TELEGRAM_SESSION_STRING" not in os.environ
+
+
+def test_read_env_overlays_non_blank_environment_and_ignores_blank(tmp_path, monkeypatch):
+    path = _three_keys_file(tmp_path)
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING_WORK", "")
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING_EXTRA", "from-env")
+    monkeypatch.setenv("TELEGRAM_API_ID", "7")
+
+    env = config.read_env(path)
+
+    assert env["TELEGRAM_SESSION_STRING_WORK"] == "sess-work"
+    assert env["TELEGRAM_SESSION_STRING_EXTRA"] == "from-env"
+    assert env["TELEGRAM_API_ID"] == "7"
+    assert config.read_env(tmp_path / "missing.env").get("TELEGRAM_SESSION_STRING") is None
+
+
+def test_set_default_and_rename_see_accounts_set_in_the_environment(tmp_path, monkeypatch):
+    path = _three_keys_file(tmp_path)
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING_CLOUD", "from-env")
+
+    config.set_default_account("cloud", path)
+    assert "TELEGRAM_DEFAULT_ACCOUNT=cloud" in path.read_text(encoding="utf-8")
+
+    with pytest.raises(config.ConfigError):
+        config.rename_session("default", "cloud", path)
+
+
+def test_rename_refuses_an_account_kept_in_a_session_file(tmp_path):
+    path = tmp_path / "config.env"
+    path.write_text("TELEGRAM_SESSION_STRING_WORK=a\nTELEGRAM_SESSION_NAME_WORK=file-session\n", encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(config.ConfigError):
+        config.rename_session("work", "job", path)
+
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_write_session_applies_extra_values_in_the_same_write(tmp_path):
+    path = tmp_path / "config.env"
+    path.write_text("TELEGRAM_API_ID=1\n# note\n", encoding="utf-8")
+
+    config.write_session("work", "s", path, extra_values={"TELEGRAM_API_ID": "2", "TELEGRAM_API_HASH": "h"})
+
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "TELEGRAM_API_ID=2",
+        "# note",
+        "TELEGRAM_SESSION_STRING_WORK=s",
+        "TELEGRAM_API_HASH=h",
+    ]

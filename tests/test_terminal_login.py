@@ -424,3 +424,130 @@ def test_missing_credentials_exit_with_message(monkeypatch, tmp_path, capsys):
 
     assert exc.value.code == 1
     assert "api_id" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# An unused session must not be left behind
+# ---------------------------------------------------------------------------
+
+
+def test_closed_stdin_at_the_question_logs_the_new_session_out(setup, monkeypatch):
+    path, use = setup
+    client = use(FakeClient(qr_outcomes=["user"]))
+    before = path.read_text(encoding="utf-8")
+
+    def eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+
+    with pytest.raises(SystemExit) as exc:
+        terminal_login.main([])
+
+    assert exc.value.code == 1
+    assert client.logged_out and client.disconnected
+    assert path.read_text(encoding="utf-8").replace("TELEGRAM_EXPOSED_TOOLS=read-only\n", "") == before
+
+
+def test_interrupt_at_the_question_logs_the_new_session_out(setup, monkeypatch):
+    path, use = setup
+    client = use(FakeClient(qr_outcomes=["user"]))
+
+    def interrupted(prompt=""):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", interrupted)
+
+    with pytest.raises(SystemExit):
+        terminal_login.main([])
+
+    assert client.logged_out
+
+
+def test_unwritable_config_logs_the_new_session_out(setup, monkeypatch, capsys):
+    path, use = setup
+    client = use(FakeClient(qr_outcomes=["user"]))
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(config, "write_session", broken)
+
+    with pytest.raises(SystemExit) as exc:
+        terminal_login.main([])
+
+    assert exc.value.code == 1
+    assert client.logged_out
+    assert "Вход выполнен" not in capsys.readouterr().out
+
+
+def test_a_saved_login_is_not_logged_out(setup):
+    path, use = setup
+    client = use(FakeClient(qr_outcomes=["user"]))
+
+    terminal_login.main([])
+
+    assert not client.logged_out
+
+
+def test_credentials_and_session_are_written_together(setup, monkeypatch):
+    path, use = setup
+    use(FakeClient(qr_outcomes=["user"]))
+    calls = []
+    real = config.write_session
+    monkeypatch.setattr(config, "write_session", lambda *a, **k: (calls.append(k), real(*a, **k)))
+
+    terminal_login.main([])
+
+    assert len(calls) == 1
+    assert calls[0]["extra_values"] == {"TELEGRAM_API_ID": "12345", "TELEGRAM_API_HASH": "abcdef"}
+
+
+class _Stream:
+    def __init__(self, encoding):
+        self.encoding = encoding
+
+
+def test_printable_replaces_what_the_console_cannot_encode_and_drops_control_characters():
+    shown = terminal_login._printable("Аня \U0001F600\x1b[31m red", _Stream("cp1251"))
+
+    assert shown == "Аня ?[31m red"
+    assert "\x1b" not in shown
+
+
+def test_printable_survives_an_unknown_or_missing_encoding():
+    assert terminal_login._printable("Аня", _Stream("no-such-codec")) == "???"
+    assert terminal_login._printable("abc", _Stream(None)) == "abc"
+
+
+def test_name_with_an_emoji_on_a_narrow_console_still_logs_in(setup, monkeypatch):
+    path, use = setup
+    client = use(FakeClient(qr_outcomes=["user"]))
+    client.me = SimpleNamespace(first_name="Аня \U0001F600", last_name=None, username=None, phone="1")
+    monkeypatch.setattr(terminal_login.sys, "stdout", _Narrow())
+
+    terminal_login.main([])
+
+    assert "TELEGRAM_SESSION_STRING=SESSION-STRING" in path.read_text(encoding="utf-8")
+
+
+class _Narrow:
+    """A console in a single-byte code page: printing what it cannot encode raises."""
+
+    encoding = "cp1251"
+
+    def write(self, text):
+        text.encode(self.encoding)
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+def test_list_accounts_sees_a_session_set_only_in_the_environment(setup, capsys, monkeypatch):
+    path, use = setup
+    monkeypatch.setenv("TELEGRAM_SESSION_STRING_WORK", "from-the-client")
+
+    terminal_login.main(["--list-accounts"])
+
+    assert capsys.readouterr().out.splitlines() == ["work"]
