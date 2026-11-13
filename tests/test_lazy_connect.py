@@ -245,7 +245,7 @@ print(json.dumps({
     assert result["released"] == ["work"] and result["disconnected"] == ["work"]
     assert result["locks"] == ["personal"]
     assert result["reached"] == ["personal"]
-    assert "CHAT-ERR" in result["personal"] or result["personal"]
+    assert "не подключился" not in result["personal"] and "`work`" not in result["personal"]
 
 
 def test_transient_failure_is_retried_only_after_the_pause():
@@ -269,7 +269,8 @@ print(json.dumps({"first": first, "soon": soon, "attempts_before": attempts_befo
 """
     )
     result = _run(script)
-    assert "`work`" in result["first"] and result["soon"] == result["first"]
+    assert "`work`" in result["first"] and "позже" in result["first"]
+    assert result["soon"] == result["first"]
     assert result["attempts_before"] == 1
     assert result["later"] is None and result["connect_calls"] == ["work", "work"]
     assert result["released"] == ["work"]  # the failed attempt's lock, not the good one
@@ -342,9 +343,10 @@ print(json.dumps({"out": asyncio.run(tool("enable_incoming_feed").fn())}))
 
 
 def test_upstream_names_this_package_relies_on_are_still_there():
+    # `runner` is imported before the server: the server assigns `_connect_or_skip`
+    # itself, which would hide an upstream rename.
     script = """
 import inspect, json
-from telegram_mcp_ag import server
 from telegram_mcp import runtime, runner
 
 missing = []
@@ -353,6 +355,7 @@ def need(ok, what):
         missing.append(what)
 
 need(callable(getattr(runner, "_connect_or_skip", None)), "runner._connect_or_skip")
+need("_connect_or_skip" in inspect.getsource(runner._main), "runner._main calls _connect_or_skip")
 connect = getattr(runner, "_connect_authorized_client", None)
 need(callable(connect) and list(inspect.signature(connect).parameters) == ["label", "client"],
      "runner._connect_authorized_client(label, client)")
@@ -361,6 +364,7 @@ need(isinstance(getattr(runner, "_NotAuthorized", None), type), "runner._NotAuth
 need(isinstance(getattr(runner, "SessionLockError", None), type), "runner.SessionLockError")
 need(runner.clients is runtime.clients, "runner.clients is runtime.clients")
 need(isinstance(getattr(runtime, "clients", None), dict), "runtime.clients")
+need(isinstance(getattr(runtime, "OPTIONAL_ACCOUNTS", None), set), "runtime.OPTIONAL_ACCOUNTS")
 need(isinstance(getattr(runtime.mcp._tool_manager, "_tools", None), dict),
      "mcp._tool_manager._tools")
 runtime._apply_exposed_tools_mode()
@@ -373,3 +377,19 @@ print(json.dumps({"missing": missing}))
         "server.py): " + ", ".join(result["missing"]) + ". Read the upstream diff before "
         "bumping the SHA in pyproject.toml."
     )
+
+
+def test_optional_account_that_never_logged_in_is_dropped_like_upstream_did():
+    script = (
+        _PREAMBLE
+        + """
+runtime.OPTIONAL_ACCOUNTS.add("work")
+behaviour["work"] = runner._NotAuthorized("not authorized")
+first = asyncio.run(connections.ensure_account_ready("work"))
+print(json.dumps({"first": first, "labels": list(runtime.clients),
+                  "failure": connections.failure("work") is not None}))
+"""
+    )
+    result = _run(script)
+    assert result["labels"] == ["personal"] and result["failure"] is False
+    assert "`work`" in result["first"]

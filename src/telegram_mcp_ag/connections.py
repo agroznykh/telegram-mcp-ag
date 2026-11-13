@@ -23,12 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from telegram_mcp import runtime as _runtime
-from telethon.errors.rpcerrorlist import (
-    AuthKeyDuplicatedError,
-    AuthKeyInvalidError,
-    AuthKeyUnregisteredError,
-    SessionRevokedError,
-)
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError
 
 # How long a call waits for the connection. Well below upstream's 55 s limit on a
 # whole tool call (TELEGRAM_TOOL_TIMEOUT_SECONDS): the lock wait (up to 20 s) and
@@ -40,13 +35,10 @@ CONNECT_WAIT_SECONDS = 40.0
 # again sooner than this, so a broken network is not hammered with every call.
 RETRY_AFTER_SECONDS = 60.0
 
-# The session is gone for good: nothing a retry could change.
-_FINAL_ERRORS = (
-    AuthKeyDuplicatedError,
-    AuthKeyUnregisteredError,
-    SessionRevokedError,
-    AuthKeyInvalidError,
-)
+# What ends a connection for good. A revoked session does not surface as an RPC
+# error here: Telethon's is_user_authorized() swallows it and upstream raises
+# _NotAuthorized (handled in _is_final).
+_FINAL_ERRORS = (AuthKeyDuplicatedError,)
 
 
 @dataclass
@@ -63,22 +55,10 @@ _failures: dict[str, Failure] = {}
 _background: set["asyncio.Task[None]"] = set()
 
 
-def reset() -> None:
-    """Forget all state. For tests."""
-    _ready.clear()
-    _tasks.clear()
-    _failures.clear()
-    _background.clear()
-
-
 def mark_ready(label: str) -> None:
     """The account is connected and authorized already (QR login in the chat)."""
     _ready.add(label)
     _failures.pop(label, None)
-
-
-def is_ready(label: str) -> bool:
-    return label in _ready
 
 
 def failure(label: str) -> Optional[Failure]:
@@ -106,15 +86,21 @@ def _quoted(label: str) -> str:
     return _one_line(label, 40)
 
 
-def reason(error: BaseException) -> str:
-    """A short cause for a failed connection. Wording per cause comes in a later phase."""
-    detail = _one_line(error)
-    name = type(error).__name__
-    return f"{name}: {detail}" if detail else name
+def reason(state: "Failure") -> str:
+    """A cause a person can act on. The exception itself goes to stderr only.
+
+    Wording per cause and the exact relogin command come in a later phase.
+    """
+    if state.final:
+        return (
+            "сессия Telegram недействительна (отозвана, не входила в аккаунт или "
+            "используется на другом компьютере). Нужен новый вход в этот аккаунт."
+        )
+    return "не удалось связаться с Telegram. Повторите запрос чуть позже."
 
 
 def unavailable_text(label: str, state: Failure) -> str:
-    return f"Аккаунт `{_quoted(label)}` не подключился: {reason(state.error)}"
+    return f"Аккаунт `{_quoted(label)}` не подключился: {reason(state)}"
 
 
 def _warm_up(label: str, client) -> None:
@@ -164,6 +150,12 @@ async def _connect(label: str, client) -> None:
     except Exception as exc:
         print(f"Account '{label}' did not connect: {type(exc).__name__}: {exc}", file=sys.stderr)
         await _release(label, client)
+        if isinstance(exc, runner._NotAuthorized) and label in _runtime.OPTIONAL_ACCOUNTS:
+            # What upstream's _connect_or_skip did at startup: a TELEGRAM_SESSION_NAME
+            # session that never logged in, next to labelled accounts, is not an account.
+            _runtime.clients.pop(label, None)
+            print(f"Skipping account '{label}': its session is not logged in.", file=sys.stderr)
+            return
         _failures[label] = Failure(exc, time.monotonic(), _is_final(exc))
         return
     _failures.pop(label, None)
@@ -209,6 +201,11 @@ async def ensure_account_ready(label: str) -> Optional[str]:
     state = _failures.get(label)
     if state is not None:
         return unavailable_text(label, state)
+    if label not in _runtime.clients:
+        return (
+            f"Аккаунта `{_quoted(label)}` нет: его сессия не входила в Telegram, аккаунт "
+            "пропущен. Повторите запрос."
+        )
     return f"Аккаунт `{_quoted(label)}` не подключился."
 
 
