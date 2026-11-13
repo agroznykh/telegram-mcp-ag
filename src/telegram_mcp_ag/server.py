@@ -43,74 +43,8 @@ _RELOGIN_SESSION_ERRORS = (
     AuthKeyDuplicatedError,
 )
 
-# Upstream checks authorization while starting and exits on a dead session,
-# before any tool runs -- so the tool-error path below that clears the session
-# never gets the chance, and every restart dies the same way. Asking Telegram
-# first turns that into the ordinary "no session" path: login mode, QR in chat.
-# A live session answers in about a second; this only bounds a hung network.
-_SESSION_CHECK_TIMEOUT_SECONDS = 5.0
-
-
-def _saved_session_is_dead() -> bool:
-    """Whether Telegram reports the configured session string as dead.
-
-    Only a definite answer counts: no network, a timeout or any other error
-    leaves the session alone, so a passing hiccup can't throw away a working
-    login. Sessions other than TELEGRAM_SESSION_STRING (file sessions, labeled
-    accounts) aren't written by this project and aren't checked.
-    """
-    session_string = os.environ.get("TELEGRAM_SESSION_STRING", "").strip()
-    if not session_string:
-        return False
-
-    import asyncio as _asyncio
-
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-
-    async def _check() -> bool:
-        client = TelegramClient(
-            StringSession(session_string),
-            int(os.environ["TELEGRAM_API_ID"].strip()),
-            os.environ["TELEGRAM_API_HASH"].strip(),
-            # The same device name the server connects with: a different one
-            # would rename this session in the user's Settings -> Devices.
-            device_model=os.environ.get("TELEGRAM_DEVICE_MODEL") or None,
-            system_version=os.environ.get("TELEGRAM_SYSTEM_VERSION") or None,
-            app_version=os.environ.get("TELEGRAM_APP_VERSION") or None,
-        )
-        try:
-            await client.connect()
-            await client(functions.updates.GetStateRequest())
-            return False
-        except _RELOGIN_SESSION_ERRORS:
-            return True
-        finally:
-            await client.disconnect()
-
-    try:
-        return _asyncio.run(
-            _asyncio.wait_for(_check(), timeout=_SESSION_CHECK_TIMEOUT_SECONDS)
-        )
-    except Exception:
-        return False
-
-
 try:
     _config.load()
-    # The test suite imports this module with made-up sessions and no network.
-    if not os.environ.get("MCP_AG_SKIP_SESSION_CHECK") and _saved_session_is_dead():
-        print(
-            "telegram-mcp-ag: Telegram reports the saved session as revoked; "
-            "removed it, starting in login mode.",
-            file=sys.stderr,
-        )
-        try:
-            _config.clear_session()
-        except OSError:
-            pass
-        os.environ.pop("TELEGRAM_SESSION_STRING", None)
-        raise _config.MissingSessionError("The saved Telegram session was revoked.")
 except _config.MissingSessionError:
     _LOGIN_MODE = True
     _LOGIN_TMPDIR = tempfile.mkdtemp(prefix="telegram-mcp-ag-bootstrap-")
@@ -162,12 +96,28 @@ if _config.download_media_enabled(os.environ["TELEGRAM_EXPOSED_TOOLS"]):
 # before `runner` (and before rich_buttons and the tools below) is imported.
 from telegram_mcp import runtime as _runtime
 from telegram_mcp_ag import accounts as _accounts
+from telegram_mcp_ag import connections as _connections
 
 _runtime.with_account = _accounts.with_account
 # Warns once about a default that names no account; the per-call lookup is silent.
 _config.default_account(os.environ)
 
 from telegram_mcp import runner as _runner  # noqa: E402
+
+
+async def _connect_at_startup_never(label, client) -> None:
+    """Upstream connects every account here before serving; we connect none.
+
+    An account is connected by the first call that needs it (connections.py), so
+    the server starts whatever state the sessions are in, and a dead one is found
+    on its first use rather than ending the process. Upstream's ``_main`` looks
+    this name up in the module at call time. Its startup log still lists every
+    label and its cache warm-up prints "Entity cache warm failed" for accounts
+    nobody has connected yet: harmless.
+    """
+
+
+_runner._connect_or_skip = _connect_at_startup_never
 from telegram_mcp.runtime import (
     ToolAnnotations,
     ensure_connected,
@@ -199,6 +149,39 @@ for _name in _UNDECORATED_ACCOUNT_TOOLS:
     _tool = mcp._tool_manager._tools.get(_name)
     if _tool is not None:
         _accounts.wrap_tool(_tool)
+
+
+async def _enable_incoming_feed_for_all(original, *args, **kwargs):
+    """The feed hears only connected accounts and has no ``account``: connect them all.
+
+    Turning the feed on is the user asking for every incoming message, so this is
+    not an implicit poll of all accounts. An account that cannot be connected is
+    named in the answer; the feed runs on the others.
+    """
+    unavailable = await _connections.ensure_all_ready()
+    result = await original(*args, **kwargs)
+    if not unavailable:
+        return result
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        data["unavailable_accounts"] = unavailable
+        return json.dumps(data, ensure_ascii=False)
+    return f"{result}\nНе подключились: " + " ".join(unavailable.values())
+
+
+_feed_tool = mcp._tool_manager._tools.get("enable_incoming_feed")
+if _feed_tool is not None:
+    _feed_original = _feed_tool.fn
+
+    async def _feed_with_connected_accounts(*args, **kwargs):
+        return await _enable_incoming_feed_for_all(_feed_original, *args, **kwargs)
+
+    _feed_with_connected_accounts.__name__ = _feed_original.__name__
+    _feed_with_connected_accounts.__doc__ = _feed_original.__doc__
+    _feed_tool.fn = _feed_with_connected_accounts
 
 
 def _install_login_client() -> None:
@@ -868,6 +851,9 @@ async def _activate_reading_tools() -> str:
     for name, tool in _HIDDEN_TOOLS.items():
         mcp._tool_manager._tools.setdefault(name, tool)
     _HIDDEN_TOOLS.clear()
+    # Connected and authorized by the login: not to be connected again.
+    for label in _runtime.clients:
+        _connections.mark_ready(label)
 
     # StringSession keeps no entity cache, so the first chat lookup would
     # otherwise pay for a full dialog fetch. Backgrounded for the same reason

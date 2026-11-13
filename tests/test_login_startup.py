@@ -45,33 +45,26 @@ server.main()
 
 _DEAD_SESSION_PROBE = """
 import telethon
-from telethon.errors.rpcerrorlist import AuthKeyUnregisteredError
+
+attempts = []
 
 
-class RevokedClient:
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def connect(self):
-        return None
-
-    async def disconnect(self):
-        return None
-
-    async def __call__(self, request):
-        raise AuthKeyUnregisteredError(request=request)
+async def connect(self, *args, **kwargs):
+    attempts.append("connect")
+    raise AssertionError("the server must not touch Telegram while starting")
 
 
-telethon.TelegramClient = RevokedClient
+telethon.TelegramClient.connect = connect
 
 from telegram_mcp_ag import server
 
-assert server._LOGIN_MODE
-print("dead-session-login-mode")
+assert not server._LOGIN_MODE
+assert not attempts
+print("revoked-session-starts-normally")
 """
 
 
-def test_dead_session_at_startup_means_login_mode_and_a_cleared_config(tmp_path):
+def test_saved_session_is_not_checked_at_startup_and_stays_in_the_config(tmp_path):
     from telethon.crypto import AuthKey
     from telethon.sessions import StringSession
 
@@ -82,18 +75,14 @@ def test_dead_session_at_startup_means_login_mode_and_a_cleared_config(tmp_path)
     config_dir = tmp_path / "telegram-mcp-ag"
     config_dir.mkdir()
     config_path = config_dir / "config.env"
-    config_path.write_text(
+    written = (
         "TELEGRAM_API_ID=1\n"
         "TELEGRAM_API_HASH=test-hash\n"
-        f"TELEGRAM_SESSION_STRING={session.save()}\n",
-        encoding="utf-8",
+        f"TELEGRAM_SESSION_STRING={session.save()}\n"
     )
+    config_path.write_text(written, encoding="utf-8")
     env = {
-        **{
-            k: v
-            for k, v in os.environ.items()
-            if not k.startswith("TELEGRAM_") and k != "MCP_AG_SKIP_SESSION_CHECK"
-        },
+        **{k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM_")},
         "HOME": str(tmp_path),
         "USERPROFILE": str(tmp_path),
     }
@@ -105,10 +94,11 @@ def test_dead_session_at_startup_means_login_mode_and_a_cleared_config(tmp_path)
         timeout=120,
     )
     assert done.returncode == 0, done.stderr
-    assert "dead-session-login-mode" in done.stdout
+    assert "revoked-session-starts-normally" in done.stdout
+    # A dead session is found on its first use (connections.py), not here: the
+    # file keeps it, whatever the network says at startup.
     remaining = config_path.read_text(encoding="utf-8")
-    assert "TELEGRAM_SESSION_STRING" not in remaining
-    assert "TELEGRAM_API_ID=1" in remaining
+    assert "TELEGRAM_SESSION_STRING=" in remaining
 
 
 def test_login_mode_starts_and_serves(tmp_path):

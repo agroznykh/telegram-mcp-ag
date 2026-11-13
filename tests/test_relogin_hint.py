@@ -53,44 +53,6 @@ def test_relogin_user_message_covers_all_session_error_types(error_cls):
     assert "QR" in message
 
 
-class _ScriptedClient:
-    """Stands in for TelegramClient in the startup session check."""
-
-    outcome = None
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def connect(self):
-        return None
-
-    async def disconnect(self):
-        return None
-
-    async def __call__(self, request):
-        if _ScriptedClient.outcome is not None:
-            raise _ScriptedClient.outcome
-        return object()
-
-
-@pytest.mark.parametrize(
-    "outcome,dead",
-    [
-        (_rpc_error(AuthKeyUnregisteredError), True),
-        (_rpc_error(AuthKeyDuplicatedError), True),
-        # No network or any other failure must not cost a working session.
-        (ConnectionError("offline"), False),
-        (None, False),
-    ],
-)
-def test_startup_session_check_trusts_only_a_definite_answer(monkeypatch, outcome, dead):
-    import telethon
-
-    monkeypatch.setattr(telethon, "TelegramClient", _ScriptedClient)
-    monkeypatch.setattr(_ScriptedClient, "outcome", outcome)
-    assert server._saved_session_is_dead() is dead
-
-
 def test_relogin_user_message_ignores_unrelated_errors():
     assert server._relogin_user_message(ValueError("something else")) is None
 
