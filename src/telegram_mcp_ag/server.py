@@ -155,8 +155,19 @@ if _config.download_media_enabled(os.environ["TELEGRAM_EXPOSED_TOOLS"]):
         if not os.environ.get(_key, "").strip():
             os.environ[_key] = _value
 
-from telegram_mcp import runner as _runner
+# Upstream's `with_account` fans a call without `account` out to every account.
+# Ours takes the only or the default account, or asks (see accounts.py). Each
+# `telegram_mcp.tools.*` module copies the name out of `runtime` when it is
+# imported, and `runner` imports them all: so the replacement has to be in place
+# before `runner` (and before rich_buttons and the tools below) is imported.
 from telegram_mcp import runtime as _runtime
+from telegram_mcp_ag import accounts as _accounts
+
+_runtime.with_account = _accounts.with_account
+# Warns once about a default that names no account; the per-call lookup is silent.
+_config.default_account(os.environ)
+
+from telegram_mcp import runner as _runner  # noqa: E402
 from telegram_mcp.runtime import (
     ToolAnnotations,
     ensure_connected,
@@ -180,6 +191,14 @@ from telegram_mcp_ag import __version__ as _VERSION  # noqa: E402
 # serverInfo.version of the MCP handshake. Upstream does not set one, and the SDK
 # then reports its own version (mcp 1.x) instead of this package's.
 mcp._mcp_server.version = _VERSION
+
+# Upstream's wait tools take `account` but are not decorated: without it they
+# wait for events of every account. They get the same selection as the rest.
+_UNDECORATED_ACCOUNT_TOOLS = ("wait_for_new_message", "wait_for_settled_message")
+for _name in _UNDECORATED_ACCOUNT_TOOLS:
+    _tool = mcp._tool_manager._tools.get(_name)
+    if _tool is not None:
+        _accounts.wrap_tool(_tool)
 
 
 def _install_login_client() -> None:
@@ -314,6 +333,19 @@ _HIDDEN_UPSTREAM_TOOLS = frozenset(
 )
 
 
+def _check_accounts_wrapped() -> None:
+    tools = [
+        tool
+        for tool in [*mcp._tool_manager.list_tools(), *_HIDDEN_TOOLS.values()]
+        if tool.name not in _HIDDEN_UPSTREAM_TOOLS
+    ]
+    try:
+        _accounts.ensure_all_wrapped(tools)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
+
+
 def _patch_apply_exposed_tools_mode():
     """Drop ``_HIDDEN_UPSTREAM_TOOLS`` right after upstream prunes by mode.
 
@@ -327,6 +359,10 @@ def _patch_apply_exposed_tools_mode():
     original = _runtime._apply_exposed_tools_mode
 
     def patched(*args, **kwargs):
+        # Before pruning, so a tool the current mode would drop is still checked:
+        # the next user may switch it on. Upstream tools we never serve are
+        # not counted. In login mode the reading tools may already be set aside.
+        _check_accounts_wrapped()
         result = original(*args, **kwargs)
         registered = {tool.name for tool in mcp._tool_manager.list_tools()}
         for name in sorted(_HIDDEN_UPSTREAM_TOOLS & registered):
