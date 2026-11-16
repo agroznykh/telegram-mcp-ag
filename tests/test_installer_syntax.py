@@ -86,6 +86,9 @@ def test_install_ps1_passes_psscriptanalyzer():
 @not_windows
 def test_install_sh_rerun_hints_do_not_point_at_a_local_install_sh():
     # The installer usually runs through `curl | bash`, so there is no file to run.
-    text = INSTALL_SH.read_text(encoding="utf-8")
-    assert "bash install.sh --relogin" not in text.replace("bash install.sh --relogin     #", "")
+    # The usage lines in the header comment are for someone who has the file.
+    lines = INSTALL_SH.read_text(encoding="utf-8").splitlines()
+    text = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+    assert "bash install.sh --relogin" not in text
+    assert "bash install.sh --add-account" not in text
     assert 'bash install.sh --uninstall"' not in text
