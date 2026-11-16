@@ -4,6 +4,8 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash
 #   bash install.sh --relogin     # redo the Telegram login, keep everything else
+#   bash install.sh --relogin --account work   # the same for one of several accounts
+#   bash install.sh --add-account # sign in a second (third...) Telegram account
 #   bash install.sh --uninstall   # remove client registrations and (optionally) the install dir
 #
 # All user-facing text is Russian: this installer targets people who have
@@ -26,6 +28,10 @@ REPO_REF=""
 # configurable, so this path cannot be overridden here either.
 INSTALL_DIR="$HOME/telegram-mcp-ag"
 VENV_DIR="$INSTALL_DIR/.venv"
+# Where the installer reads the person's answers from (it normally runs from a
+# pipe, so stdin is the script itself). A variable so that tests can point it
+# elsewhere.
+TTY_DEVICE="/dev/tty"
 # setup_python_and_venv() renames $VENV_DIR here before rebuilding it fresh
 # in place (not in a staging dir moved into place afterward -- venvs bake an
 # absolute shebang to their own creation path, so renaming a *completed*
@@ -45,8 +51,24 @@ SERVER_NAME="telegram-mcp-ag"
 # installer normally arrives through a pipe (curl | bash), so there is no
 # install.sh in the current folder to point them at.
 installer_command() {
-    printf '%s' "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash -s -- $1"
+    if [[ -z "${1:-}" ]]; then
+        printf '%s' "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash"
+    else
+        printf '%s' "curl -fsSL https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.sh | bash -s -- $1"
+    fi
 }
+
+# Filled by parse_args(): install (no flags), add-account, relogin or uninstall,
+# and the account label given with --account (empty if none).
+ACTION="install"
+ACCOUNT_ARG=""
+# Filled by load_accounts(): canonical labels, one per line, and the label of the
+# default account (empty if none). Labels come only from telegram-mcp-ag-login
+# --list-accounts: config.env is never parsed here.
+ACCOUNT_LABELS=""
+ACCOUNT_DEFAULT=""
+# The account the final self-check asks about; empty means "no account argument".
+SELF_CHECK_ACCOUNT=""
 
 # Filled in by prompt_api_credentials() before write_config_env() reads
 # them. Pre-declared (empty) so `set -u` doesn't complain if that ever changes.
@@ -132,18 +154,23 @@ trap '_restore_venv_backup_on_failure; _cleanup_maintenance_venv' EXIT
 
 ask() {
     # $1 = prompt text, $2 = name of the variable to fill.
-    # reply must default to "": under `set -u`, a bare `local reply`
+    # _ask_reply must default to "": under `set -u`, a bare `local _ask_reply`
     # (no assignment) is NOT considered set, so a failed/interrupted
     # `read` below would otherwise crash this on "unbound variable"
     # instead of behaving like an empty answer.
-    local reply=""
-    read -r -p "$1" reply </dev/tty
-    printf -v "$2" '%s' "$reply"
+    #
+    # The local is named so that no caller's variable can have the same name:
+    # `printf -v` below stores into the nearest variable called "$2", and with a
+    # shared name that is this local one, not the caller's (bash scopes
+    # dynamically), so the caller would get an empty answer.
+    local _ask_reply=""
+    read -r -p "$1" _ask_reply <"$TTY_DEVICE"
+    printf -v "$2" '%s' "$_ask_reply"
 }
 
 confirm() {
     local reply=""
-    read -r -p "$1 [y/N] " reply </dev/tty || true
+    read -r -p "$1 [y/N] " reply <"$TTY_DEVICE" || true
     [[ "$reply" =~ ^[YyДд]$ ]]
 }
 
@@ -165,7 +192,7 @@ detect_os() {
 }
 
 require_tty() {
-    if [[ ! -r /dev/tty ]]; then
+    if [[ ! -r "$TTY_DEVICE" ]]; then
         error "Нужен интерактивный терминал: установщик спрашивает api_id/api_hash и просит войти в Telegram."
         error "Скачайте скрипт и запустите его напрямую: curl -fsSL <ссылка на install.sh> -o install.sh && bash install.sh"
         exit 1
@@ -331,29 +358,66 @@ prompt_api_credentials() {
     done
 }
 
+# One run of the login command, for the account with this label (none: the
+# command picks the only one itself). A function so that tests can stand in for
+# the command; the person's terminal is its stdin because the installer's own
+# stdin is the script when it arrives through a pipe.
+_run_login_once() {
+    local label="${1:-}"
+    if [[ -n "$label" ]]; then
+        PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
+            "$VENV_DIR/bin/telegram-mcp-ag-login" --account "$label" <"$TTY_DEVICE"
+    else
+        PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
+            "$VENV_DIR/bin/telegram-mcp-ag-login" <"$TTY_DEVICE"
+    fi
+}
+
+# $1 = label of the account to sign in (empty: the only one, or the first).
 run_telegram_login() {
+    local label="${1:-}"
     echo
+    if [[ -n "$label" ]]; then
+        info "Вход в аккаунт \"$label\". В приложении Telegram должен быть сейчас открыт именно он."
+    fi
     info "Вход в Telegram: сейчас появится QR-код."
     info "В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код."
     echo
 
     # The login command merges the session into config.env, and falls back to
     # a phone-number login on its own if the QR code is never scanned. It
-    # prints the session nowhere. Exit code 3: Telegram rejected api_id/api_hash.
+    # prints the session nowhere. Exit codes: 3 -- Telegram rejected
+    # api_id/api_hash; 4 -- several accounts and none named; 5 -- the person
+    # said it is the wrong account (nothing was saved).
     local status=0
     while true; do
         status=0
-        PYTHONUNBUFFERED=1 TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" \
-            "$VENV_DIR/bin/telegram-mcp-ag-login" <"/dev/tty" || status=$?
+        _run_login_once "$label" || status=$?
         if [[ "$status" -eq 0 ]]; then
             return 0
         fi
         if [[ "$status" -eq 3 ]]; then
             prompt_api_credentials
-            write_config_env
+            save_api_credentials
             continue
         fi
-        error "Не удалось войти в Telegram. Запустите вход ещё раз: $(installer_command --relogin)"
+        if [[ "$status" -eq 4 ]]; then
+            load_accounts || true
+            choose_account "В какой аккаунт входить?"
+            label="$CHOSEN_ACCOUNT"
+            continue
+        fi
+        if [[ "$status" -eq 5 ]]; then
+            info "Хорошо, ничего не сохранено."
+            if confirm "Попробовать войти ещё раз?"; then
+                continue
+            fi
+        fi
+        local retry="--relogin"
+        if [[ -n "$label" ]]; then
+            retry="--relogin --account $label"
+        fi
+        error "Не удалось войти в Telegram. Запустите вход ещё раз: $(installer_command "$retry")"
         exit 1
     done
 }
@@ -405,6 +469,378 @@ write_config_env() {
     )
     chmod 600 "$CONFIG_PATH"
     ok "api_id и api_hash сохранены."
+}
+
+has_session_keys() {
+    local f="$1"
+    [[ -f "$f" ]] || return 1
+    grep -qE '^TELEGRAM_SESSION_(STRING|NAME)[A-Za-z0-9_]*=.+' "$f"
+}
+
+# After Telegram rejects api_id/api_hash: when config.env already holds sessions
+# only the two values are replaced, in place (write_values keeps every other
+# line and, on Windows, the file's ACL). write_config_env writes the file from
+# scratch and would erase the accounts' sessions. The values travel in the
+# environment, not in argv, where `ps` would show them.
+save_api_credentials() {
+    if has_session_keys "$CONFIG_PATH"; then
+        TELEGRAM_API_ID="$API_ID" TELEGRAM_API_HASH="$API_HASH" "$VENV_DIR/bin/python" -c '
+import os
+from telegram_mcp_ag import config
+
+config.write_values(
+    {"TELEGRAM_API_ID": os.environ["TELEGRAM_API_ID"], "TELEGRAM_API_HASH": os.environ["TELEGRAM_API_HASH"]},
+    config.CONFIG_PATH,
+)
+'
+        ok "api_id и api_hash обновлены (сохранённые сессии не тронуты)."
+    else
+        write_config_env
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Accounts. The installer never reads config.env for them: the labels come from
+# `telegram-mcp-ag-login --list-accounts`, the changes go through its options.
+# ---------------------------------------------------------------------------
+
+# Whether the installed telegram-mcp-ag-login knows --account. The installer is
+# downloaded from `main` but the package comes from the latest release, so right
+# after the multi-account code lands in main the package may still be older.
+# The help text is captured first: grep -q would close the pipe early and
+# pipefail would turn that into a failure.
+login_supports_accounts() {
+    local help_text=""
+    help_text="$("$VENV_DIR/bin/telegram-mcp-ag-login" --help 2>&1)" || true
+    [[ "$help_text" == *"--account"* ]]
+}
+
+require_accounts_support() {
+    if login_supports_accounts; then
+        return 0
+    fi
+    error "$1 появится в следующей версии: установлен пакет, который ещё не умеет работать с несколькими аккаунтами. Ничего не изменено."
+    exit 1
+}
+
+# Fills ACCOUNT_LABELS and ACCOUNT_DEFAULT. A line is "метка" or "метка (по
+# умолчанию)": only the first word is used, and only if it is a canonical label,
+# since it ends up in commands the person will paste.
+load_accounts() {
+    local output="" line="" label=""
+    ACCOUNT_LABELS=""
+    ACCOUNT_DEFAULT=""
+    output="$("$VENV_DIR/bin/telegram-mcp-ag-login" --list-accounts 2>/dev/null)" || return 1
+    while IFS= read -r line; do
+        label="${line%% *}"
+        [[ "$label" =~ ^[a-z0-9_]{1,32}$ ]] || continue
+        ACCOUNT_LABELS="${ACCOUNT_LABELS:+$ACCOUNT_LABELS$'\n'}$label"
+        if [[ "$line" == *" ("* ]]; then
+            ACCOUNT_DEFAULT="$label"
+        fi
+    done <<<"$output"
+    return 0
+}
+
+# Number of lines in $1 (a newline-separated list), 0 for an empty one.
+_count_lines() {
+    local n=0 line=""
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && n=$((n + 1))
+    done <<<"$1"
+    printf '%s' "$n"
+}
+
+_in_lines() {
+    local needle="$1" line=""
+    while IFS= read -r line; do
+        [[ "$line" == "$needle" ]] && return 0
+    done <<<"$2"
+    return 1
+}
+
+_join_lines() {
+    local out="" line=""
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && out="${out:+$out, }$line"
+    done <<<"$1"
+    printf '%s' "$out"
+}
+
+# "метка1 (по умолчанию), метка2" for messages.
+_describe_accounts() {
+    local out="" line=""
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        if [[ "$line" == "$ACCOUNT_DEFAULT" ]]; then
+            line="$line (по умолчанию)"
+        fi
+        out="${out:+$out, }$line"
+    done <<<"$ACCOUNT_LABELS"
+    printf '%s' "$out"
+}
+
+# Prints the canonical form of a label, or the reason it is not allowed (on
+# stderr, in Russian) and exits with 2. Any other failure (a broken venv, a
+# traceback) exits with 1, so that a caller can tell "ask again" from "stop".
+# $2 = 1 to let "default" through. The check is the package's own, so the
+# installer and the server cannot disagree.
+_validated_label() {
+    "$VENV_DIR/bin/python" -c '
+import sys
+from telegram_mcp_ag import config
+
+try:
+    print(config.validate_label(sys.argv[1], allow_default=sys.argv[2] == "1"))
+except config.ConfigError as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(2)
+' "$1" "$2"
+}
+
+# $1 = question. Shows ACCOUNT_LABELS as a numbered list; fills CHOSEN_ACCOUNT.
+CHOSEN_ACCOUNT=""
+choose_account() {
+    local reply="" label="" i=0 n=0
+    n="$(_count_lines "$ACCOUNT_LABELS")"
+    if [[ "$n" -eq 0 ]]; then
+        error "Не нашёл сохранённых аккаунтов. Сначала выполните установку без флагов: $(installer_command "")"
+        exit 1
+    fi
+    while true; do
+        echo
+        info "$1"
+        i=0
+        while IFS= read -r label; do
+            [[ -n "$label" ]] || continue
+            i=$((i + 1))
+            echo "  $i) $label"
+        done <<<"$ACCOUNT_LABELS"
+        ask "Введите номер: " reply
+        if [[ "$reply" =~ ^[0-9]+$ && "$reply" -ge 1 && "$reply" -le "$n" ]]; then
+            i=0
+            while IFS= read -r label; do
+                [[ -n "$label" ]] || continue
+                i=$((i + 1))
+                if [[ "$i" -eq "$reply" ]]; then
+                    CHOSEN_ACCOUNT="$label"
+                    return 0
+                fi
+            done <<<"$ACCOUNT_LABELS"
+        fi
+        warn "Нужно ввести номер из списка."
+    done
+}
+
+# Asks for a label until it is allowed and free. $1 = question, $2 = labels that
+# may not be reused (newline-separated), $3 = 1 if empty input is an answer
+# ("keep as it is"). Fills ASKED_LABEL (empty if skipped).
+ASKED_LABEL=""
+ask_new_label() {
+    local reply="" label="" status=0
+    while true; do
+        ask "$1" reply
+        if [[ -z "$reply" ]]; then
+            if [[ "${3:-0}" -eq 1 ]]; then
+                ASKED_LABEL=""
+                return 0
+            fi
+            warn "Название нужно: одно слово латиницей, например work."
+            continue
+        fi
+        status=0
+        label="$(_validated_label "$reply" 0)" || status=$?
+        if [[ "$status" -eq 2 ]]; then
+            continue
+        fi
+        if [[ "$status" -ne 0 ]]; then
+            error "Не удалось проверить название: установленный пакет не запускается. Запустите установщик ещё раз: $(installer_command "")"
+            exit 1
+        fi
+        # "none" is how --set-default says "no default account": an account with
+        # that name could never be chosen as the default.
+        if [[ "$label" == "none" ]]; then
+            warn "Название \"none\" занято под служебное значение, выберите другое."
+            continue
+        fi
+        if _in_lines "$label" "$2"; then
+            warn "Название \"$label\" уже занято, выберите другое."
+            continue
+        fi
+        ASKED_LABEL="$label"
+        return 0
+    done
+}
+
+# api_id/api_hash for a login: the saved ones, or ask and save.
+ensure_api_credentials() {
+    if load_api_credentials "$CONFIG_PATH"; then
+        info "Использую сохранённые api_id и api_hash."
+    else
+        prompt_api_credentials
+        save_api_credentials
+    fi
+}
+
+# The accounts after the new one is added, as a newline-separated list: the
+# existing ones (the unnamed one under its new name, if it gets one) and the new
+# one. $1 = new label, $2 = new name of the unnamed account (may be empty).
+_labels_after_add() {
+    local label="" out=""
+    while IFS= read -r label; do
+        [[ -n "$label" ]] || continue
+        if [[ "$label" == "default" && -n "$2" ]]; then
+            label="$2"
+        fi
+        out="${out:+$out$'\n'}$label"
+    done <<<"$ACCOUNT_LABELS"
+    printf '%s' "${out:+$out$'\n'}$1"
+}
+
+# Which account answers when the chat does not name one. $1 = the accounts to
+# pick from; $2 = the one that is chosen now (Enter keeps it; empty: none).
+# Fills CHOSEN_DEFAULT (empty: "always ask").
+CHOSEN_DEFAULT=""
+choose_default_account() {
+    local labels="$1" current="$2" reply="" label="" i=0 n=0
+    n="$(_count_lines "$labels")"
+    while true; do
+        echo
+        info "Какой аккаунт использовать, когда вы не говорите, какой именно?"
+        i=0
+        while IFS= read -r label; do
+            [[ -n "$label" ]] || continue
+            i=$((i + 1))
+            if [[ "$label" == "$current" ]]; then
+                echo "  $i) $label (сейчас)"
+            else
+                echo "  $i) $label"
+            fi
+        done <<<"$labels"
+        echo "  0) никакой -- каждый раз спрашивать, какой нужен"
+        if [[ -n "$current" ]]; then
+            ask "Введите номер (Enter -- $current, как сейчас): " reply
+        else
+            ask "Введите номер (Enter -- никакой): " reply
+        fi
+        if [[ -z "$reply" ]]; then
+            CHOSEN_DEFAULT="$current"
+            return 0
+        fi
+        if [[ "$reply" == "0" ]]; then
+            CHOSEN_DEFAULT=""
+            return 0
+        fi
+        if [[ "$reply" =~ ^[0-9]+$ && "$reply" -ge 1 && "$reply" -le "$n" ]]; then
+            i=0
+            while IFS= read -r label; do
+                [[ -n "$label" ]] || continue
+                i=$((i + 1))
+                if [[ "$i" -eq "$reply" ]]; then
+                    CHOSEN_DEFAULT="$label"
+                    return 0
+                fi
+            done <<<"$labels"
+        fi
+        warn "Нужно ввести номер из списка."
+    done
+}
+
+add_account_flow() {
+    require_accounts_support "Добавление аккаунта"
+    if ! has_full_config "$CONFIG_PATH" || ! load_accounts || [[ -z "$ACCOUNT_LABELS" ]]; then
+        error "Первого аккаунта ещё нет. Сначала выполните обычную установку: $(installer_command "")"
+        exit 1
+    fi
+
+    echo
+    info "Сейчас подключено: $(_describe_accounts)."
+    info "Новому аккаунту нужно название -- по нему вы будете выбирать его в чате. Одно слово латиницей: например, work для рабочего или personal для личного."
+    local new_label="" first_name="" current_default="$ACCOUNT_DEFAULT"
+    ask_new_label "Название нового аккаунта: " "$ACCOUNT_LABELS"$'\n'"default" 0
+    new_label="$ASKED_LABEL"
+
+    if _in_lines "default" "$ACCOUNT_LABELS"; then
+        echo
+        info "Первый аккаунт пока без названия. Лучше его назвать, чтобы в чате различать оба."
+        ask_new_label "Название первого аккаунта, например personal (Enter -- оставить без названия): " "$ACCOUNT_LABELS"$'\n'"$new_label" 1
+        first_name="$ASKED_LABEL"
+    fi
+
+    local after="" renamed_default="$current_default"
+    after="$(_labels_after_add "$new_label" "$first_name")"
+    if [[ "$current_default" == "default" && -n "$first_name" ]]; then
+        renamed_default="$first_name"
+    fi
+    choose_default_account "$after" "$renamed_default"
+
+    ensure_api_credentials
+    # The login goes first: if it fails or is declined, nothing has changed yet.
+    run_telegram_login "$new_label"
+
+    # What the default is now, so that it is rewritten only if the choice differs.
+    local now_default="$current_default"
+    if [[ -n "$first_name" ]]; then
+        if "$VENV_DIR/bin/telegram-mcp-ag-login" --rename-default "$first_name"; then
+            now_default="$renamed_default"
+        else
+            warn "Не удалось дать первому аккаунту название \"$first_name\": он остался без названия. Аккаунт \"$new_label\" добавлен."
+            if [[ "$CHOSEN_DEFAULT" == "$first_name" ]]; then
+                CHOSEN_DEFAULT="default"
+            fi
+        fi
+    fi
+    if [[ "$CHOSEN_DEFAULT" != "$now_default" ]]; then
+        if ! "$VENV_DIR/bin/telegram-mcp-ag-login" --set-default "${CHOSEN_DEFAULT:-none}"; then
+            warn "Не удалось запомнить аккаунт по умолчанию. Повторите: $VENV_DIR/bin/telegram-mcp-ag-login --set-default ${CHOSEN_DEFAULT:-none}"
+        fi
+    fi
+
+    SELF_CHECK_ACCOUNT="$new_label"
+    echo
+    ok "Аккаунт \"$new_label\" добавлен."
+    warn "Сервер читает настройки при запуске: перезапустите Claude, Codex или ChatGPT, чтобы он увидел новый аккаунт."
+}
+
+relogin_flow() {
+    local label=""
+    if [[ -n "$ACCOUNT_ARG" ]]; then
+        require_accounts_support "Перелогин по названию аккаунта (--account)"
+        label="$(_validated_label "$ACCOUNT_ARG" 1)" || exit 1
+        if ! load_accounts || ! _in_lines "$label" "$ACCOUNT_LABELS"; then
+            error "Аккаунта \"$label\" нет${ACCOUNT_LABELS:+. Есть: $(_join_lines "$ACCOUNT_LABELS")}. Чтобы добавить новый, вставьте в терминал: $(installer_command --add-account)"
+            exit 1
+        fi
+    elif login_supports_accounts && load_accounts && [[ "$(_count_lines "$ACCOUNT_LABELS")" -ge 2 ]]; then
+        choose_account "Аккаунтов несколько. В какой войти заново?"
+        label="$CHOSEN_ACCOUNT"
+    fi
+
+    ensure_api_credentials
+    run_telegram_login "$label"
+    SELF_CHECK_ACCOUNT="$label"
+}
+
+install_login_flow() {
+    if has_full_config "$CONFIG_PATH"; then
+        info "Вход в Telegram уже выполнен -- использую сохранённую сессию."
+        if login_supports_accounts && load_accounts && [[ -n "$ACCOUNT_LABELS" ]]; then
+            info "Аккаунты: $(_describe_accounts)."
+            info "Добавить ещё один аккаунт, вставьте в терминал: $(installer_command --add-account)"
+            if [[ "$(_count_lines "$ACCOUNT_LABELS")" -ge 2 ]]; then
+                local first_label=""
+                first_label="${ACCOUNT_LABELS%%$'\n'*}"
+                info "Чтобы войти заново в один из них (например, после отзыва сессии), вставьте в терминал: $(installer_command "--relogin --account $first_label") -- вместо \"$first_label\" подставьте нужное название."
+            else
+                info "Чтобы войти заново (например, после отзыва сессии), вставьте в терминал: $(installer_command --relogin)"
+            fi
+        else
+            info "Чтобы войти заново (например, после отзыва сессии), вставьте в терминал: $(installer_command --relogin)"
+        fi
+    else
+        ensure_api_credentials
+        run_telegram_login ""
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -753,18 +1189,39 @@ install_codex_skills() {
 # Self-check + summary
 # ---------------------------------------------------------------------------
 
+# The account the self-check asks about. With several accounts the server
+# answers a call without `account` with a question instead of JSON, so one has
+# to be named: the one just added or signed in again, else the default, else the
+# first. With a single account (or an older package) none is named.
+_self_check_account() {
+    if [[ -n "$SELF_CHECK_ACCOUNT" ]]; then
+        printf '%s' "$SELF_CHECK_ACCOUNT"
+        return 0
+    fi
+    login_supports_accounts && load_accounts || return 0
+    [[ "$(_count_lines "$ACCOUNT_LABELS")" -ge 2 ]] || return 0
+    printf '%s' "${ACCOUNT_DEFAULT:-${ACCOUNT_LABELS%%$'\n'*}}"
+}
+
 self_check() {
     echo
-    info "Проверяю подключение к Telegram..."
+    local account=""
+    account="$(_self_check_account)"
+    if [[ -n "$account" ]]; then
+        info "Проверяю подключение к Telegram (аккаунт \"$account\")..."
+    else
+        info "Проверяю подключение к Telegram..."
+    fi
     local output="" status=0
-    output="$("$VENV_DIR/bin/python" - <<'PYEOF' 2>&1
+    output="$("$VENV_DIR/bin/python" - "$account" <<'PYEOF' 2>&1
 import asyncio
 import json
 import sys
 
 from telegram_mcp_ag.server import check_transcription_access
 
-result = asyncio.run(check_transcription_access())
+account = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+result = asyncio.run(check_transcription_access(account=account))
 try:
     data = json.loads(result)
 except json.JSONDecodeError:
@@ -804,8 +1261,24 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     if [[ -n "$error_log" ]]; then
         echo "  - Лог ошибок сервера: $error_log"
     fi
-    echo "  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в терминал:"
-    echo "      $(installer_command --relogin)"
+    if login_supports_accounts && load_accounts && [[ -n "$ACCOUNT_LABELS" ]]; then
+        echo "  - Аккаунты: $(_describe_accounts)"
+        echo "  - Добавить ещё один аккаунт, вставьте в терминал:"
+        echo "      $(installer_command --add-account)"
+        if [[ "$(_count_lines "$ACCOUNT_LABELS")" -ge 2 ]]; then
+            local label=""
+            echo "  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в терминал команду нужного аккаунта:"
+            while IFS= read -r label; do
+                [[ -n "$label" ]] && echo "      $(installer_command "--relogin --account $label")"
+            done <<<"$ACCOUNT_LABELS"
+        else
+            echo "  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в терминал:"
+            echo "      $(installer_command --relogin)"
+        fi
+    else
+        echo "  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в терминал:"
+        echo "      $(installer_command --relogin)"
+    fi
     echo "  - Полное удаление, вставьте в терминал:"
     echo "      $(installer_command --uninstall)"
 }
@@ -927,42 +1400,86 @@ do_uninstall() {
 
 print_help() {
     cat <<EOF
-Использование: install.sh [--relogin | --uninstall]
+Использование: install.sh [--relogin [--account МЕТКА] | --add-account | --uninstall]
 
-  (без флагов)  Установить или обновить telegram-mcp-ag.
-  --relogin     Войти в Telegram заново (например, если сессия отозвана
-                вручную в Settings -> Devices) -- даже если config.env
-                уже существует.
-  --uninstall   Снять регистрации из клиентов и предложить удалить
-                папку $INSTALL_DIR.
-  -h, --help    Показать эту справку.
+  (без флагов)    Установить или обновить telegram-mcp-ag.
+  --add-account   Добавить ещё один аккаунт Telegram (второй, третий...):
+                  спросит название нового аккаунта и войдёт в него.
+  --relogin       Войти в Telegram заново (например, если сессия отозвана
+                  вручную в Settings -> Devices) -- даже если config.env
+                  уже существует. Если аккаунтов несколько, спросит, в какой.
+  --account МЕТКА Вместе с --relogin: войти заново именно в этот аккаунт.
+  --uninstall     Снять регистрации из клиентов и предложить удалить
+                  папку $INSTALL_DIR.
+  -h, --help      Показать эту справку.
 EOF
 }
 
-main() {
-    local do_uninstall_flag=0
-    local relogin_flag=0
-
-    for arg in "$@"; do
-        case "$arg" in
-            --uninstall) do_uninstall_flag=1 ;;
-            --relogin) relogin_flag=1 ;;
+# Fills ACTION and ACCOUNT_ARG, or explains what is wrong and exits. Written
+# with a while/shift loop because --account takes a value.
+parse_args() {
+    ACTION="install"
+    ACCOUNT_ARG=""
+    local uninstall=0 relogin=0 add=0 account_given=0
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --uninstall) uninstall=1 ;;
+            --relogin) relogin=1 ;;
+            --add-account) add=1 ;;
+            --account)
+                if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then
+                    error "После --account нужно название аккаунта, например: --relogin --account work"
+                    exit 1
+                fi
+                ACCOUNT_ARG="$2"
+                account_given=1
+                shift
+                ;;
+            --account=*)
+                ACCOUNT_ARG="${1#--account=}"
+                account_given=1
+                ;;
             -h | --help)
                 print_help
                 exit 0
                 ;;
             *)
-                error "Неизвестный флаг: $arg"
+                error "Неизвестный флаг: $1"
                 print_help
                 exit 1
                 ;;
         esac
+        shift
     done
+
+    if [[ "$account_given" -eq 1 && ! "$ACCOUNT_ARG" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+        error "Название аккаунта -- латинские буквы, цифры, \"_\" и \"-\", не длиннее 32 символов. Например, \"рабочий\" -> work."
+        exit 1
+    fi
+    if [[ "$account_given" -eq 1 && "$relogin" -eq 0 ]]; then
+        error "--account работает только вместе с --relogin. Чтобы добавить новый аккаунт, используйте --add-account."
+        exit 1
+    fi
+    if [[ $((uninstall + relogin + add)) -gt 1 ]]; then
+        error "Флаги --uninstall, --relogin и --add-account нельзя сочетать: выберите один."
+        exit 1
+    fi
+    if [[ "$uninstall" -eq 1 ]]; then
+        ACTION="uninstall"
+    elif [[ "$add" -eq 1 ]]; then
+        ACTION="add-account"
+    elif [[ "$relogin" -eq 1 ]]; then
+        ACTION="relogin"
+    fi
+}
+
+main() {
+    parse_args "$@"
 
     detect_os
     require_tty
 
-    if [[ "$do_uninstall_flag" -eq 1 ]]; then
+    if [[ "$ACTION" == "uninstall" ]]; then
         do_uninstall
         exit 0
     fi
@@ -971,18 +1488,11 @@ main() {
     install_package
     _confirm_new_venv
 
-    if [[ "$relogin_flag" -eq 0 ]] && has_full_config "$CONFIG_PATH"; then
-        info "Вход в Telegram уже выполнен -- использую сохранённую сессию."
-        info "Чтобы войти заново (например, после отзыва сессии), вставьте в терминал: $(installer_command --relogin)"
-    else
-        if load_api_credentials "$CONFIG_PATH"; then
-            info "Использую сохранённые api_id и api_hash."
-        else
-            prompt_api_credentials
-            write_config_env
-        fi
-        run_telegram_login
-    fi
+    case "$ACTION" in
+        add-account) add_account_flow ;;
+        relogin) relogin_flow ;;
+        *) install_login_flow ;;
+    esac
 
     register_claude_code
     register_codex

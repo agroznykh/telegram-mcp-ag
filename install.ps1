@@ -15,7 +15,14 @@
 
 .PARAMETER Relogin
     Redo the Telegram login (e.g. after the session was revoked manually in
-    Settings -> Devices), even if config.env already exists.
+    Settings -> Devices), even if config.env already exists. With several
+    accounts, asks which one (or use -Account).
+
+.PARAMETER Account
+    With -Relogin: the label of the account to sign in again.
+
+.PARAMETER AddAccount
+    Sign in a second (third...) Telegram account. Asks for its label.
 
 .PARAMETER Uninstall
     Remove client registrations and offer to delete the install directory.
@@ -33,10 +40,14 @@
     # For flags, download first -- iex can't forward parameters:
     iwr 'https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1' -OutFile install.ps1
     .\install.ps1 -Relogin
+    .\install.ps1 -Relogin -Account work
+    .\install.ps1 -AddAccount
 #>
 [CmdletBinding()]
 param(
     [switch]$Relogin,
+    [switch]$AddAccount,
+    [string]$Account,
     [switch]$Uninstall,
     [switch]$Qr,
     [switch]$Phone
@@ -108,6 +119,14 @@ function Get-InstallerCommand {
     param([string]$Flag)
     '$f = "$env:TEMP\telegram-mcp-ag-install.ps1"; iwr ''https://raw.githubusercontent.com/agroznykh/telegram-mcp-ag/main/install.ps1'' -OutFile $f; powershell -NoProfile -ExecutionPolicy Bypass -File $f ' + $Flag
 }
+
+# Filled by Read-AccountList: canonical labels and the label of the default
+# account ('' if none). They come only from telegram-mcp-ag-login --list-accounts:
+# config.env is never parsed here for accounts.
+$script:AccountLabels = @()
+$script:AccountDefault = ''
+# The account the final self-check asks about; '' means "no account argument".
+$script:SelfCheckAccount = ''
 
 $script:MaintenanceVenvs = New-Object System.Collections.Generic.List[string]
 # Read by Register-ClaudeCode()/Register-Codex(). Always on, without asking:
@@ -432,10 +451,32 @@ function Read-ApiCredentials {
     return @{ ApiId = $apiId; ApiHash = $apiHash }
 }
 
+$script:LoginExitCode = 0
+
+# One run of the login command; its exit code is left in $script:LoginExitCode.
+# Not returned: the function's output must stay unredirected, or the QR code and
+# the questions the command asks would be swallowed by whoever captures it. A
+# function so that tests can stand in for the command.
+function Invoke-LoginProcess {
+    param([string]$ApiId, [string]$ApiHash, [string[]]$Arguments)
+    $env:TELEGRAM_API_ID = $ApiId
+    $env:TELEGRAM_API_HASH = $ApiHash
+    $env:PYTHONUNBUFFERED = '1'
+    try {
+        & (Get-VenvLoginExe) @Arguments
+        $script:LoginExitCode = $LASTEXITCODE
+    } finally {
+        Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-TelegramLogin {
-    param([string]$ApiId, [string]$ApiHash, [switch]$Qr, [switch]$Phone)
+    param([string]$ApiId, [string]$ApiHash, [string]$Account, [switch]$Qr, [switch]$Phone)
 
     Write-Host ''
+    if ($Account) {
+        Write-Info "Вход в аккаунт `"$Account`". В приложении Telegram должен быть сейчас открыт именно он."
+    }
     Write-Info 'Вход в Telegram.'
     Write-Info 'В приложении Telegram: Настройки -> Устройства -> Подключить устройство -> отсканировать QR-код.'
     Write-Host ''
@@ -455,28 +496,37 @@ function Invoke-TelegramLogin {
 
     # The login command merges the session into config.env (keeping that
     # file's ACL), and falls back to a phone-number login on its own if the
-    # QR code is never scanned. It prints the session nowhere. Exit code 3:
-    # Telegram rejected api_id/api_hash.
-    $loginArgs = @()
-    if (-not $useQr) { $loginArgs += '--phone' }
-
+    # QR code is never scanned. It prints the session nowhere. Exit codes:
+    # 3 -- Telegram rejected api_id/api_hash; 4 -- several accounts and none
+    # named; 5 -- the person said it is the wrong account (nothing was saved).
     while ($true) {
-        $env:TELEGRAM_API_ID = $ApiId
-        $env:TELEGRAM_API_HASH = $ApiHash
-        $env:PYTHONUNBUFFERED = '1'
-        & (Get-VenvLoginExe) @loginArgs
-        $status = $LASTEXITCODE
-        Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH, Env:\PYTHONUNBUFFERED -ErrorAction SilentlyContinue
+        $loginArgs = @()
+        if (-not $useQr) { $loginArgs += '--phone' }
+        if ($Account) { $loginArgs += @('--account', $Account) }
+
+        Invoke-LoginProcess -ApiId $ApiId -ApiHash $ApiHash -Arguments $loginArgs
+        $status = $script:LoginExitCode
 
         if ($status -eq 0) { return }
         if ($status -eq 3) {
             $creds = Read-ApiCredentials
             $ApiId = $creds.ApiId
             $ApiHash = $creds.ApiHash
-            Write-ConfigEnv -ApiId $ApiId -ApiHash $ApiHash
+            Save-ApiCredentials -ApiId $ApiId -ApiHash $ApiHash | Out-Null
             continue
         }
-        Write-Failure "Не удалось войти в Telegram. Запустите вход ещё раз: $(Get-InstallerCommand '-Relogin')"
+        if ($status -eq 4) {
+            Read-AccountList | Out-Null
+            $Account = Read-AccountChoice -Question 'В какой аккаунт входить?'
+            continue
+        }
+        if ($status -eq 5) {
+            Write-Info 'Хорошо, ничего не сохранено.'
+            if (Confirm-Action 'Попробовать войти ещё раз?') { continue }
+        }
+        $retry = '-Relogin'
+        if ($Account) { $retry = "-Relogin -Account $Account" }
+        Write-Failure "Не удалось войти в Telegram. Запустите вход ещё раз: $(Get-InstallerCommand $retry)"
         exit 1
     }
 }
@@ -551,6 +601,368 @@ function Write-ConfigEnv {
 
     Protect-ConfigFile -Path $ConfigPath
     Write-Ok 'api_id и api_hash сохранены.'
+}
+
+function Test-SessionKeys {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) { return $false }
+    $content = Get-Content -Raw -Path $Path
+    return [bool]($content -match '(?m)^TELEGRAM_SESSION_(STRING|NAME)[A-Za-z0-9_]*=.+$')
+}
+
+$script:SaveApiCredentialsScript = @'
+import os
+from telegram_mcp_ag import config
+
+config.write_values(
+    {"TELEGRAM_API_ID": os.environ["TELEGRAM_API_ID"], "TELEGRAM_API_HASH": os.environ["TELEGRAM_API_HASH"]},
+    config.CONFIG_PATH,
+)
+'@
+
+# After Telegram rejects api_id/api_hash: when config.env already holds sessions
+# only the two values are replaced, in place (write_values keeps every other line
+# and the file's ACL). Write-ConfigEnv writes the file from scratch and would
+# erase the accounts' sessions. The values travel in the environment, not in
+# arguments.
+function Save-ApiCredentials {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal installer helper, not a public cmdlet.')]
+    param([string]$ApiId, [string]$ApiHash)
+    if (-not (Test-SessionKeys -Path $ConfigPath)) {
+        Write-ConfigEnv -ApiId $ApiId -ApiHash $ApiHash
+        return
+    }
+    $env:TELEGRAM_API_ID = $ApiId
+    $env:TELEGRAM_API_HASH = $ApiHash
+    try {
+        $saved = Invoke-PythonEdit -PythonExe (Get-VenvPython) -ScriptBody $script:SaveApiCredentialsScript -Arguments @()
+    } finally {
+        Remove-Item Env:\TELEGRAM_API_ID, Env:\TELEGRAM_API_HASH -ErrorAction SilentlyContinue
+    }
+    if (-not $saved) {
+        Write-Failure 'Не удалось обновить api_id и api_hash в config.env. Сохранённые сессии не тронуты.'
+        exit 1
+    }
+    Write-Ok 'api_id и api_hash обновлены (сохранённые сессии не тронуты).'
+}
+
+# api_id/api_hash for a login: the saved ones, or ask and save. Returns
+# @{ ApiId; ApiHash }.
+function Initialize-ApiCredentials {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Returns both api_id and api_hash; plural is accurate.')]
+    param()
+    $creds = Read-ConfigCredentials -Path $ConfigPath
+    if ($creds) {
+        Write-Info 'Использую сохранённые api_id и api_hash.'
+        return $creds
+    }
+    $creds = Read-ApiCredentials
+    Save-ApiCredentials -ApiId $creds.ApiId -ApiHash $creds.ApiHash | Out-Null
+    return $creds
+}
+
+# ---------------------------------------------------------------------------
+# Accounts. The installer never reads config.env for them: the labels come from
+# `telegram-mcp-ag-login --list-accounts`, the changes go through its options.
+# ---------------------------------------------------------------------------
+
+# Runs the login command and returns @{ Status; Output } with its standard output
+# as one string; standard error is dropped. Python is told to write UTF-8: to a
+# pipe it would use the console's ANSI code page, which cannot encode Russian
+# (the "(по умолчанию)" mark). A function so that tests can stand in for it.
+function Get-LoginCliOutput {
+    param([string[]]$Arguments)
+    $exe = Get-VenvLoginExe
+    if (-not (Test-Path $exe)) { return @{ Status = 127; Output = '' } }
+    # Native stderr would become a terminating error under 'Stop' in 5.1.
+    $ErrorActionPreference = 'Continue'
+    $previous = $env:PYTHONIOENCODING
+    $env:PYTHONIOENCODING = 'utf-8'
+    try {
+        $text = (& $exe @Arguments 2>$null | Out-String)
+        $status = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previous) {
+            Remove-Item Env:\PYTHONIOENCODING -ErrorAction SilentlyContinue
+        } else {
+            $env:PYTHONIOENCODING = $previous
+        }
+    }
+    return @{ Status = $status; Output = $text }
+}
+
+# Runs the login command for its effect, its output shown to the person;
+# returns the exit code. A function so that tests can stand in for it.
+function Invoke-LoginCli {
+    param([string[]]$Arguments)
+    $ErrorActionPreference = 'Continue'
+    & (Get-VenvLoginExe) @Arguments | Out-Host
+    return $LASTEXITCODE
+}
+
+# Whether the installed telegram-mcp-ag-login knows -Account. The installer is
+# downloaded from `main` but the package comes from the latest release, so right
+# after the multi-account code lands in main the package may still be older.
+function Test-LoginSupportsAccounts {
+    $result = Get-LoginCliOutput -Arguments @('--help')
+    return [bool]($result.Output -like '*--account*')
+}
+
+function Assert-AccountsSupported {
+    param([string]$What)
+    if (Test-LoginSupportsAccounts) { return }
+    Write-Failure "$What появится в следующей версии: установлен пакет, который ещё не умеет работать с несколькими аккаунтами. Ничего не изменено."
+    exit 1
+}
+
+# Fills $script:AccountLabels and $script:AccountDefault; $false if the list
+# could not be read. A line is "метка" or "метка (по умолчанию)": only the first
+# word is used, and only if it is a canonical label, since it ends up in
+# commands the person will paste.
+function Read-AccountList {
+    $script:AccountLabels = @()
+    $script:AccountDefault = ''
+    $result = Get-LoginCliOutput -Arguments @('--list-accounts')
+    if ($result.Status -ne 0) { return $false }
+    $labels = @()
+    foreach ($line in ($result.Output -split '\r?\n')) {
+        $text = $line.Trim()
+        if (-not $text) { continue }
+        $label = ($text -split '\s+')[0]
+        if ($label -cnotmatch '^[a-z0-9_]{1,32}$') { continue }
+        $labels += $label
+        if ($text -match '^\S+\s+\(') { $script:AccountDefault = $label }
+    }
+    $script:AccountLabels = $labels
+    return $true
+}
+
+# "метка1 (по умолчанию), метка2" for messages.
+function Format-Accounts {
+    $parts = @()
+    foreach ($label in $script:AccountLabels) {
+        if ($label -eq $script:AccountDefault) {
+            $parts += "$label (по умолчанию)"
+        } else {
+            $parts += $label
+        }
+    }
+    return ($parts -join ', ')
+}
+
+$script:ValidateLabelScript = @'
+import sys
+from telegram_mcp_ag import config
+
+try:
+    print(config.validate_label(sys.argv[1], allow_default=sys.argv[2] == "1"))
+except config.ConfigError as exc:
+    print(exc, file=sys.stderr)
+    sys.exit(2)
+'@
+
+# The canonical form of a label, or $null (the reason is printed, in Russian) if
+# it is not allowed (exit code 2 of the script). Any other failure (a broken venv,
+# a traceback) stops the installer, so that a caller does not ask again forever.
+# The check is the package's own, so the installer and the server cannot disagree.
+function Get-ValidatedLabel {
+    param([string]$Label, [bool]$AllowDefault)
+    $allow = '0'
+    if ($AllowDefault) { $allow = '1' }
+    $output = Invoke-PythonScript -PythonExe (Get-VenvPython) -ScriptBody $script:ValidateLabelScript -Arguments @($Label, $allow)
+    $status = $LASTEXITCODE
+    if ($status -eq 2) { return $null }
+    if ($status -ne 0) {
+        Write-Failure "Не удалось проверить название: установленный пакет не запускается. Запустите установщик ещё раз: $(Get-InstallerCommand '')"
+        exit 1
+    }
+    return ([string]($output | Out-String)).Trim()
+}
+
+# Asks for a label until it is allowed and free. With -AllowEmpty an empty answer
+# means "keep as it is" and returns ''.
+function Read-NewLabel {
+    param([string]$Prompt, [string[]]$Taken = @(), [switch]$AllowEmpty)
+    while ($true) {
+        $reply = Read-Answer $Prompt
+        if ([string]::IsNullOrWhiteSpace($reply)) {
+            if ($AllowEmpty) { return '' }
+            Write-Warn 'Название нужно: одно слово латиницей, например work.'
+            continue
+        }
+        $label = Get-ValidatedLabel -Label $reply -AllowDefault $false
+        if (-not $label) { continue }
+        # 'none' is how --set-default says "no default account": an account with
+        # that name could never be chosen as the default.
+        if ($label -eq 'none') {
+            Write-Warn 'Название "none" занято под служебное значение, выберите другое.'
+            continue
+        }
+        if ($Taken -contains $label) {
+            Write-Warn "Название `"$label`" уже занято, выберите другое."
+            continue
+        }
+        return $label
+    }
+}
+
+# Shows the accounts as a numbered list and returns the label of the chosen one.
+function Read-AccountChoice {
+    param([string]$Question)
+    $labels = @($script:AccountLabels)
+    if ($labels.Count -eq 0) {
+        Write-Failure "Не нашёл сохранённых аккаунтов. Сначала выполните установку без флагов: $(Get-InstallerCommand '')"
+        exit 1
+    }
+    while ($true) {
+        Write-Host ''
+        Write-Info $Question
+        for ($i = 0; $i -lt $labels.Count; $i++) {
+            Write-Host ('  {0}) {1}' -f ($i + 1), $labels[$i])
+        }
+        $reply = Read-Answer 'Введите номер'
+        $number = 0
+        if ([int]::TryParse($reply, [ref]$number) -and $number -ge 1 -and $number -le $labels.Count) {
+            return $labels[$number - 1]
+        }
+        Write-Warn 'Нужно ввести номер из списка.'
+    }
+}
+
+# Which account answers when the chat does not name one. Returns the label, or ''
+# for "always ask". Enter keeps -Current.
+function Read-DefaultAccountChoice {
+    param([string[]]$Labels, [string]$Current)
+    while ($true) {
+        Write-Host ''
+        Write-Info 'Какой аккаунт использовать, когда вы не говорите, какой именно?'
+        for ($i = 0; $i -lt $Labels.Count; $i++) {
+            $mark = ''
+            if ($Labels[$i] -eq $Current) { $mark = ' (сейчас)' }
+            Write-Host ('  {0}) {1}{2}' -f ($i + 1), $Labels[$i], $mark)
+        }
+        Write-Host '  0) никакой -- каждый раз спрашивать, какой нужен'
+        $hint = 'Enter -- никакой'
+        if ($Current) { $hint = "Enter -- $Current, как сейчас" }
+        $reply = Read-Answer "Введите номер ($hint)"
+        if ([string]::IsNullOrWhiteSpace($reply)) { return $Current }
+        if ($reply.Trim() -eq '0') { return '' }
+        $number = 0
+        if ([int]::TryParse($reply, [ref]$number) -and $number -ge 1 -and $number -le $Labels.Count) {
+            return $Labels[$number - 1]
+        }
+        Write-Warn 'Нужно ввести номер из списка.'
+    }
+}
+
+function Invoke-AddAccount {
+    param([switch]$Qr, [switch]$Phone)
+
+    Assert-AccountsSupported 'Добавление аккаунта'
+    if (-not (Test-FullConfig -Path $ConfigPath) -or -not (Read-AccountList) -or $script:AccountLabels.Count -eq 0) {
+        Write-Failure "Первого аккаунта ещё нет. Сначала выполните обычную установку: $(Get-InstallerCommand '')"
+        exit 1
+    }
+
+    Write-Host ''
+    Write-Info "Сейчас подключено: $(Format-Accounts)."
+    Write-Info 'Новому аккаунту нужно название -- по нему вы будете выбирать его в чате. Одно слово латиницей: например, work для рабочего или personal для личного.'
+    $currentDefault = $script:AccountDefault
+    $existing = @($script:AccountLabels)
+    $newLabel = Read-NewLabel -Prompt 'Название нового аккаунта' -Taken ($existing + @('default'))
+
+    $firstName = ''
+    if ($existing -contains 'default') {
+        Write-Host ''
+        Write-Info 'Первый аккаунт пока без названия. Лучше его назвать, чтобы в чате различать оба.'
+        $firstName = Read-NewLabel -Prompt 'Название первого аккаунта, например personal (Enter -- оставить без названия)' -Taken ($existing + @($newLabel)) -AllowEmpty
+    }
+
+    $after = @()
+    foreach ($label in $existing) {
+        if ($label -eq 'default' -and $firstName) {
+            $after += $firstName
+        } else {
+            $after += $label
+        }
+    }
+    $after += $newLabel
+    $renamedDefault = $currentDefault
+    if ($currentDefault -eq 'default' -and $firstName) { $renamedDefault = $firstName }
+    $chosenDefault = Read-DefaultAccountChoice -Labels $after -Current $renamedDefault
+
+    $creds = Initialize-ApiCredentials
+    # The login goes first: if it fails or is declined, nothing has changed yet.
+    Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Account $newLabel -Qr:$Qr -Phone:$Phone
+
+    # What the default is now, so that it is rewritten only if the choice differs.
+    $nowDefault = $currentDefault
+    if ($firstName) {
+        if ((Invoke-LoginCli -Arguments @('--rename-default', $firstName)) -eq 0) {
+            $nowDefault = $renamedDefault
+        } else {
+            Write-Warn "Не удалось дать первому аккаунту название `"$firstName`": он остался без названия. Аккаунт `"$newLabel`" добавлен."
+            if ($chosenDefault -eq $firstName) { $chosenDefault = 'default' }
+        }
+    }
+    if ($chosenDefault -ne $nowDefault) {
+        $target = $chosenDefault
+        if (-not $target) { $target = 'none' }
+        if ((Invoke-LoginCli -Arguments @('--set-default', $target)) -ne 0) {
+            Write-Warn "Не удалось запомнить аккаунт по умолчанию. Повторите: $(Get-VenvLoginExe) --set-default $target"
+        }
+    }
+
+    $script:SelfCheckAccount = $newLabel
+    Write-Host ''
+    Write-Ok "Аккаунт `"$newLabel`" добавлен."
+    Write-Warn 'Сервер читает настройки при запуске: перезапустите Claude, Codex или ChatGPT, чтобы он увидел новый аккаунт.'
+}
+
+function Invoke-ReloginAccount {
+    param([string]$Account, [switch]$Qr, [switch]$Phone)
+
+    $label = ''
+    if ($Account) {
+        Assert-AccountsSupported 'Перелогин по названию аккаунта (-Account)'
+        $label = Get-ValidatedLabel -Label $Account -AllowDefault $true
+        if (-not $label) { exit 1 }
+        if (-not (Read-AccountList) -or ($script:AccountLabels -notcontains $label)) {
+            $known = ''
+            if ($script:AccountLabels.Count -gt 0) { $known = ". Есть: $($script:AccountLabels -join ', ')" }
+            Write-Failure "Аккаунта `"$label`" нет$known. Чтобы добавить новый, вставьте в PowerShell: $(Get-InstallerCommand '-AddAccount')"
+            exit 1
+        }
+    } elseif ((Test-LoginSupportsAccounts) -and (Read-AccountList) -and $script:AccountLabels.Count -ge 2) {
+        $label = Read-AccountChoice -Question 'Аккаунтов несколько. В какой войти заново?'
+    }
+
+    $creds = Initialize-ApiCredentials
+    Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Account $label -Qr:$Qr -Phone:$Phone
+    $script:SelfCheckAccount = $label
+}
+
+function Invoke-DefaultLogin {
+    param([switch]$Qr, [switch]$Phone)
+
+    if (Test-FullConfig -Path $ConfigPath) {
+        Write-Info 'Вход в Telegram уже выполнен -- использую сохранённую сессию.'
+        if ((Test-LoginSupportsAccounts) -and (Read-AccountList) -and $script:AccountLabels.Count -gt 0) {
+            Write-Info "Аккаунты: $(Format-Accounts)."
+            Write-Info "Добавить ещё один аккаунт, вставьте в PowerShell: $(Get-InstallerCommand '-AddAccount')"
+            if ($script:AccountLabels.Count -ge 2) {
+                $first = $script:AccountLabels[0]
+                Write-Info "Чтобы войти заново в один из них (например, после отзыва сессии), вставьте в PowerShell: $(Get-InstallerCommand "-Relogin -Account $first") -- вместо `"$first`" подставьте нужное название."
+            } else {
+                Write-Info "Чтобы войти заново (например, после отзыва сессии), вставьте в PowerShell: $(Get-InstallerCommand '-Relogin')"
+            }
+        } else {
+            Write-Info "Чтобы войти заново (например, после отзыва сессии), вставьте в PowerShell: $(Get-InstallerCommand '-Relogin')"
+        }
+        return
+    }
+    $creds = Initialize-ApiCredentials
+    Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
 }
 
 # ---------------------------------------------------------------------------
@@ -1055,7 +1467,8 @@ import sys
 
 from telegram_mcp_ag.server import check_transcription_access
 
-result = asyncio.run(check_transcription_access())
+account = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+result = asyncio.run(check_transcription_access(account=account))
 try:
     data = json.loads(result)
 except json.JSONDecodeError:
@@ -1065,14 +1478,32 @@ print(result)
 sys.exit(0 if data and "is_premium" in data else 1)
 '@
 
+# The account the self-check asks about. With several accounts the server answers
+# a call without `account` with a question instead of JSON, so one has to be
+# named: the one just added or signed in again, else the default, else the first.
+# With a single account (or an older package) none is named.
+function Get-SelfCheckAccount {
+    if ($script:SelfCheckAccount) { return $script:SelfCheckAccount }
+    if (-not (Test-LoginSupportsAccounts)) { return '' }
+    if (-not (Read-AccountList)) { return '' }
+    if ($script:AccountLabels.Count -lt 2) { return '' }
+    if ($script:AccountDefault) { return $script:AccountDefault }
+    return $script:AccountLabels[0]
+}
+
 function Invoke-SelfCheck {
     Write-Host ''
-    Write-Info 'Проверяю подключение к Telegram...'
+    $account = Get-SelfCheckAccount
+    if ($account) {
+        Write-Info "Проверяю подключение к Telegram (аккаунт `"$account`")..."
+    } else {
+        Write-Info 'Проверяю подключение к Telegram...'
+    }
     $py = Get-VenvPython
     # The server logs INFO lines to stderr; with 2>&1 and 'Stop' PowerShell 5.1
     # would treat the first one as a failure.
     $ErrorActionPreference = 'Continue'
-    $output = Invoke-PythonScript -PythonExe $py -ScriptBody $script:SelfCheckScript 2>&1
+    $output = Invoke-PythonScript -PythonExe $py -ScriptBody $script:SelfCheckScript -Arguments @($account) 2>&1
     $status = $LASTEXITCODE
     $outputText = ($output | Out-String).TrimEnd()
 
@@ -1111,8 +1542,23 @@ print(os.path.join(os.path.dirname(package_dir), "mcp_errors.log"))
     if ($errorLog) {
         Write-Host "  - Лог ошибок сервера: $errorLog"
     }
-    Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в PowerShell:'
-    Write-Host "      $(Get-InstallerCommand '-Relogin')"
+    if ((Test-LoginSupportsAccounts) -and (Read-AccountList) -and $script:AccountLabels.Count -gt 0) {
+        Write-Host "  - Аккаунты: $(Format-Accounts)"
+        Write-Host '  - Добавить ещё один аккаунт, вставьте в PowerShell:'
+        Write-Host "      $(Get-InstallerCommand '-AddAccount')"
+        if ($script:AccountLabels.Count -ge 2) {
+            Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в PowerShell команду нужного аккаунта:'
+            foreach ($label in $script:AccountLabels) {
+                Write-Host "      $(Get-InstallerCommand "-Relogin -Account $label")"
+            }
+        } else {
+            Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в PowerShell:'
+            Write-Host "      $(Get-InstallerCommand '-Relogin')"
+        }
+    } else {
+        Write-Host '  - Повторный вход в Telegram (например, после отзыва сессии), вставьте в PowerShell:'
+        Write-Host "      $(Get-InstallerCommand '-Relogin')"
+    }
     Write-Host '  - Полное удаление, вставьте в PowerShell:'
     Write-Host "      $(Get-InstallerCommand '-Uninstall')"
 }
@@ -1212,10 +1658,29 @@ function Invoke-Uninstall {
 # Entry point
 # ---------------------------------------------------------------------------
 
+# Checks the combination of flags and explains what is wrong; exits if it is.
+function Assert-InstallerArguments {
+    param([switch]$Uninstall, [switch]$Relogin, [switch]$AddAccount, [string]$Account)
+
+    if ($Account -and $Account -notmatch '^[A-Za-z0-9_-]{1,32}$') {
+        Write-Failure 'Название аккаунта -- латинские буквы, цифры, "_" и "-", не длиннее 32 символов. Например, "рабочий" -> work.'
+        exit 1
+    }
+    if ($Account -and -not $Relogin) {
+        Write-Failure '-Account работает только вместе с -Relogin. Чтобы добавить новый аккаунт, используйте -AddAccount.'
+        exit 1
+    }
+    if (([int][bool]$Uninstall + [int][bool]$Relogin + [int][bool]$AddAccount) -gt 1) {
+        Write-Failure 'Флаги -Uninstall, -Relogin и -AddAccount нельзя сочетать: выберите один.'
+        exit 1
+    }
+}
+
 function Invoke-Main {
-    param([switch]$Uninstall, [switch]$Relogin, [switch]$Qr, [switch]$Phone)
+    param([switch]$Uninstall, [switch]$Relogin, [switch]$AddAccount, [string]$Account, [switch]$Qr, [switch]$Phone)
 
     Test-SupportedPlatform
+    Assert-InstallerArguments -Uninstall:$Uninstall -Relogin:$Relogin -AddAccount:$AddAccount -Account $Account
 
     if ($Uninstall) {
         Invoke-Uninstall
@@ -1227,18 +1692,12 @@ function Invoke-Main {
     Install-ServerPackage
     Confirm-NewVenv
 
-    if (-not $Relogin -and (Test-FullConfig -Path $ConfigPath)) {
-        Write-Info 'Вход в Telegram уже выполнен -- использую сохранённую сессию.'
-        Write-Info "Чтобы войти заново (например, после отзыва сессии), вставьте в PowerShell: $(Get-InstallerCommand '-Relogin')"
+    if ($AddAccount) {
+        Invoke-AddAccount -Qr:$Qr -Phone:$Phone
+    } elseif ($Relogin) {
+        Invoke-ReloginAccount -Account $Account -Qr:$Qr -Phone:$Phone
     } else {
-        $creds = Read-ConfigCredentials -Path $ConfigPath
-        if ($creds) {
-            Write-Info 'Использую сохранённые api_id и api_hash.'
-        } else {
-            $creds = Read-ApiCredentials
-            Write-ConfigEnv -ApiId $creds.ApiId -ApiHash $creds.ApiHash
-        }
-        Invoke-TelegramLogin -ApiId $creds.ApiId -ApiHash $creds.ApiHash -Qr:$Qr -Phone:$Phone
+        Invoke-DefaultLogin -Qr:$Qr -Phone:$Phone
     }
 
     # Each step degrades independently: a client that isn't installed, or
@@ -1256,7 +1715,7 @@ function Invoke-Main {
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        Invoke-Main -Uninstall:$Uninstall -Relogin:$Relogin -Qr:$Qr -Phone:$Phone
+        Invoke-Main -Uninstall:$Uninstall -Relogin:$Relogin -AddAccount:$AddAccount -Account $Account -Qr:$Qr -Phone:$Phone
     } finally {
         Restore-VenvBackupOnFailure
         Remove-MaintenanceVenvs
