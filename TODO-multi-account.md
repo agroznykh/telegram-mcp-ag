@@ -25,7 +25,7 @@ Telegram и явно выбирать, с каким. **Все аккаунты 
 | 01 | Ключи аккаунтов в `config.py` и вход в терминале по метке | L      | да         | да                 | PR открыт |
 | 02 | Выбор аккаунта: по умолчанию или вопрос                   | M      | да         | нет                | PR открыт |
 | 03 | Ленивое подключение всех аккаунтов                        | L      | да         | да                 | слита     |
-| 04 | Отпавший аккаунт: сообщения, перелогин, `list_accounts`   | M      | да         | да                 | PR открыт |
+| 04 | Отпавший аккаунт: сообщения, перелогин, `list_accounts`   | M      | да         | да                 | слита     |
 | 05 | Установщики `install.sh` и `install.ps1`                  | L      | да         | да                 | не начата |
 | 06 | Скилл `telegram-digest` и документация                    | S      | да         | нет                | не начата |
 | 07 | Сквозная проверка на двух аккаунтах и релиз               | S      | по факту   | нет                | не начата |
@@ -617,7 +617,7 @@ CI `install` останавливается до входа в Telegram.
 
 **Ревью безопасности:** да (сообщения с командами, чистка секретов, ключи сессий).
 
-**Итог реализации:** PR открыт (ветка `multi-account-04-lost-account`, от `main` `985f79c`).
+**Итог реализации:** PR [#21](https://github.com/agroznykh/telegram-mcp-ag/pull/21) слит (ветка `multi-account-04-lost-account`, от `main` `985f79c`).
 
 - `connections.py`: причины сбоя — `REVOKED` (`_NotAuthorized`, `AuthKeyUnregistered/SessionRevoked/AuthKeyInvalid`),
   `DUPLICATE`, `WRONG_ACCOUNT` (`RuntimeError` при подключении), `TRANSIENT`; `Failure.kind` вместо `final`
