@@ -179,7 +179,10 @@ async def test_start_returns_instructions_and_no_picture(registered):
     (text,) = await tools["telegram_login_start"]()
 
     assert "Устройства" in text
-    assert "tg://login?token=" in text
+    # The one-time login link must not reach the model; the terminal is the fallback.
+    assert "tg://" not in text
+    assert "token=" not in text
+    assert "--relogin" in text or "-Relogin" in text
 
 
 @pytest.mark.asyncio
@@ -248,6 +251,9 @@ async def test_login_starts_over_once_every_code_expired(registered, monkeypatch
 
     assert client.qr.recreated == 1
     assert "устарели" in text
+    assert "tg://" not in text
+    assert client.qr.url not in text
+    assert "--relogin" in text or "-Relogin" in text
     assert client.qr.url in login._state["page_path"].read_text(encoding="utf-8")
 
 

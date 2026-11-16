@@ -374,9 +374,11 @@ def register(mcp, ToolAnnotations, get_client) -> list:
             note += " Он открыт в окне браузера на этом компьютере и там сам обновляется."
         elif path is not None:
             note += f" Он на странице {path} — откройте её в браузере, она сама обновляется."
+        # The login link itself is never put in the chat: it is a one-time
+        # credential and would end up in the model's context.
         note += (
             "\nПосле сканирования вызовите telegram_login_check ещё раз."
-            f"\nЗапасная ссылка: {qr.url}"
+            f"\nЕсли код не видно, войдите через терминал. {_relogin.instructions()}"
         )
         return [note]
 
@@ -457,11 +459,14 @@ def register(mcp, ToolAnnotations, get_client) -> list:
                     "показывает актуальный."
                 )
             instructions.append(
-                "Если код не видно, откройте эту ссылку на компьютере, где уже "
-                f"установлен Telegram: {qr.url}"
-            )
-            instructions.append(
                 "После сканирования вызовите telegram_login_check, чтобы завершить вход."
+            )
+            # Last, with nothing after it: a trailing period copied along with
+            # the command would turn --relogin into an unknown flag. The login
+            # link is deliberately not shown: it is a one-time credential and
+            # would end up in the model's context.
+            instructions.append(
+                f"Если код не видно, войдите через терминал. {_relogin.instructions()}"
             )
 
             # No picture in the chat: a code there is dead within half a
