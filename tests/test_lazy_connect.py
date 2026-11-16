@@ -238,14 +238,15 @@ print(json.dumps({
 """
     )
     result = _run(script)
-    assert "`work`" in result["work"] and "не подключился" in result["work"]
+    assert "`work`" in result["work"] and "отозвана" in result["work"]
+    assert "account work" in result["work"] or "Account work" in result["work"]
     assert result["work_again"] == result["work"]
     # the revoked session is final: no second attempt
     assert result["connect_calls"] == ["work", "personal"]
     assert result["released"] == ["work"] and result["disconnected"] == ["work"]
     assert result["locks"] == ["personal"]
     assert result["reached"] == ["personal"]
-    assert "не подключился" not in result["personal"] and "`work`" not in result["personal"]
+    assert "отозвана" not in result["personal"] and "`work`" not in result["personal"]
 
 
 def test_transient_failure_is_retried_only_after_the_pause():
