@@ -26,7 +26,7 @@ Telegram и явно выбирать, с каким. **Все аккаунты 
 | 02 | Выбор аккаунта: по умолчанию или вопрос                   | M      | да         | нет                | PR открыт |
 | 03 | Ленивое подключение всех аккаунтов                        | L      | да         | да                 | слита     |
 | 04 | Отпавший аккаунт: сообщения, перелогин, `list_accounts`   | M      | да         | да                 | слита     |
-| 05 | Установщики `install.sh` и `install.ps1`                  | L      | да         | да                 | PR открыт |
+| 05 | Установщики `install.sh` и `install.ps1`                  | L      | да         | да                 | слита     |
 | 06 | Скилл `telegram-digest` и документация                    | S      | да         | нет                | не начата |
 | 07 | Сквозная проверка на двух аккаунтах и релиз               | S      | по факту   | нет                | не начата |
 
@@ -726,7 +726,7 @@ CI `install` останавливается до входа в Telegram.
 
 **Ревью безопасности:** да (shell и PowerShell, секреты, ACL, ввод пользователя).
 
-**Итог реализации:** PR открыт (ветка `claude/phase-05-multi-account-kcplgy`, от `main` `4aa4153`).
+**Итог реализации:** PR [#22](https://github.com/agroznykh/telegram-mcp-ag/pull/22) слит (ветка `claude/phase-05-multi-account-kcplgy`, от `main` `4aa4153`).
 
 - `install.sh`: разбор флагов `parse_args` (`while`/`shift`, `--account МЕТКА` и `--account=МЕТКА`;
   `--account` только с `--relogin`; `--uninstall`, `--relogin`, `--add-account` взаимоисключающие; форма метки
