@@ -539,3 +539,60 @@ def test_self_check_passes_the_account_to_the_check():
     text = INSTALL_SH.read_text(encoding="utf-8")
     assert 'python" - "$account" <<' in text
     assert "check_transcription_access(account=account)" in text
+
+
+# -- the real ask() ------------------------------------------------------------
+#
+# Everything above swaps ask() for a stand-in (see PRELUDE), so none of it could
+# notice that the real one handed its answer to nobody: ask() keeps the reply in
+# a local variable, and a caller that passed the same name got an empty string.
+# Here the real ask() reads from a pipe that gives one line per question.
+
+REAL_ASK_PRELUDE = PRELUDE.replace(
+    "ask() { local r=\"\"; IFS= read -r r <&3 || true; printf -v \"$2\" '%s' \"$r\"; }\n", ""
+)
+assert REAL_ASK_PRELUDE != PRELUDE
+
+REAL_ASK_FEED = r"""
+FIFO="$HOME/tty"
+mkfifo "$FIFO"
+TTY_DEVICE="$FIFO"
+( while IFS= read -r line <&3; do printf '%s\n' "$line" >"$FIFO"; done ) >/dev/null 2>&1 &
+trap 'kill $! 2>/dev/null || true' EXIT
+"""
+
+
+def _run_with_real_ask(box, body: str, answers) -> subprocess.CompletedProcess:
+    box.home.mkdir(parents=True, exist_ok=True)
+    box.answers.write_text("".join(f"{a}\n" for a in answers), encoding="utf-8")
+    try:
+        return subprocess.run(
+            ["bash", "-c", REAL_ASK_PRELUDE + REAL_ASK_FEED + body],
+            capture_output=True,
+            text=True,
+            env=box.env(),
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("the question was asked again and again: the answer never reached the caller")
+
+
+def test_the_real_ask_hands_a_label_to_ask_new_label(box):
+    result = _run_with_real_ask(box, 'ask_new_label "Name: " "" 0\necho "label=$ASKED_LABEL"\n', ["work"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "label=work" in result.stdout
+
+
+def test_the_real_ask_hands_a_number_to_choose_account(box):
+    body = 'ACCOUNT_LABELS=$\'personal\\nwork\'\nchoose_account "Which?"\necho "chosen=$CHOSEN_ACCOUNT"\n'
+    result = _run_with_real_ask(box, body, ["2"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "chosen=work" in result.stdout
+
+
+@pytest.mark.parametrize("answer, expected", [("2", "work"), ("0", ""), ("", "personal")])
+def test_the_real_ask_hands_a_number_to_choose_default_account(box, answer, expected):
+    body = 'choose_default_account $\'personal\\nwork\' "personal"\necho "default=[$CHOSEN_DEFAULT]"\n'
+    result = _run_with_real_ask(box, body, [answer])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"default=[{expected}]" in result.stdout

@@ -154,13 +154,18 @@ trap '_restore_venv_backup_on_failure; _cleanup_maintenance_venv' EXIT
 
 ask() {
     # $1 = prompt text, $2 = name of the variable to fill.
-    # reply must default to "": under `set -u`, a bare `local reply`
+    # _ask_reply must default to "": under `set -u`, a bare `local _ask_reply`
     # (no assignment) is NOT considered set, so a failed/interrupted
     # `read` below would otherwise crash this on "unbound variable"
     # instead of behaving like an empty answer.
-    local reply=""
-    read -r -p "$1" reply <"$TTY_DEVICE"
-    printf -v "$2" '%s' "$reply"
+    #
+    # The local is named so that no caller's variable can have the same name:
+    # `printf -v` below stores into the nearest variable called "$2", and with a
+    # shared name that is this local one, not the caller's (bash scopes
+    # dynamically), so the caller would get an empty answer.
+    local _ask_reply=""
+    read -r -p "$1" _ask_reply <"$TTY_DEVICE"
+    printf -v "$2" '%s' "$_ask_reply"
 }
 
 confirm() {
