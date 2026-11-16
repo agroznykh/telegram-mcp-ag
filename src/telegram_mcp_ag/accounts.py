@@ -13,7 +13,6 @@ replaced after import.
 """
 
 import os
-from contextvars import ContextVar
 from functools import wraps
 from typing import Callable, Iterable, Optional
 
@@ -30,7 +29,7 @@ MARK = "_telegram_mcp_ag_account_aware"
 
 # Label of the account the running call goes to. Read by the phases that connect
 # an account lazily and word failures per account.
-current_account: ContextVar[Optional[str]] = ContextVar("telegram_mcp_ag_account", default=None)
+current_account = _connections.current_account
 
 
 def _labels() -> list[str]:
@@ -187,6 +186,8 @@ def describe_accounts() -> str:
         if _connections.is_ready(label):
             who = _connections.profile(label)
             status = "подключён" + (f": {who}" if who else "")
+        elif _connections.is_connecting(label):
+            status = "подключается сейчас"
         elif failed is not None:
             status = "недоступен. " + _connections.unavailable_text(label, failed)
         else:

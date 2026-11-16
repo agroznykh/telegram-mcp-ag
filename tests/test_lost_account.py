@@ -187,7 +187,7 @@ def test_a_session_of_another_account_names_the_command_and_is_not_deleted_even_
     script = (
         _PREAMBLE
         + """
-connect_error["default"] = RuntimeError("Session is logged in as @other, expected @me")
+connect_error["default"] = RuntimeError("Telegram client 'default' is logged in to a different account than expected")
 answer = asyncio.run(tool("get_chats").fn())
 print(json.dumps({"answer": answer, "keys": keys()}))
 """
@@ -329,3 +329,82 @@ print(json.dumps({"fn": t.fn.__module__, "ro": t.annotations.readOnlyHint,
     result = _run(script)
     assert result["fn"] == "telegram_mcp_ag.server" and result["ro"] is True
     assert result["params"] == []
+
+
+def test_the_command_is_the_last_thing_in_the_answer_so_a_copy_gets_the_bare_label():
+    script = (
+        _PREAMBLE
+        + """
+boom["work"] = rpc(AuthKeyUnregisteredError)
+print(json.dumps({"text": asyncio.run(tool("get_chats").fn(account="work"))}))
+"""
+    )
+    assert _run(script)["text"].endswith(("--account work", "-Account work"))
+
+
+def test_one_account_whose_session_cannot_be_deleted_is_not_told_it_was():
+    # the session lives in the client's environment, not in config.env: nothing to delete
+    script = (
+        _PREAMBLE
+        + """
+config_path.write_text("TELEGRAM_API_ID=1\\nTELEGRAM_API_HASH=h\\n")
+boom["default"] = rpc(AuthKeyUnregisteredError)
+answer = asyncio.run(tool("get_chats").fn())
+print(json.dumps({"answer": answer}))
+"""
+    )
+    answer = _run(script, accounts=("",))["answer"]
+    assert "уже удалили" not in answer and "QR" not in answer
+    assert "--account default" in answer or "-Account default" in answer
+    assert "остальных" not in answer
+
+
+@pytest.mark.parametrize("error", ["SessionExpiredError", "AuthKeyPermEmptyError"])
+def test_more_dead_session_errors_are_recognised_in_the_middle_of_work(error):
+    from telethon.errors import rpcerrorlist  # noqa: F401
+
+    script = (
+        _PREAMBLE
+        + f"""
+from telethon.errors.rpcerrorlist import {error}
+boom["work"] = rpc({error})
+print(json.dumps({{"text": asyncio.run(tool("get_chats").fn(account="work"))}}))
+"""
+    )
+    text = _run(script)["text"]
+    assert "`work`" in text and ("--account work" in text or "-Account work" in text)
+
+
+def test_an_unrelated_runtime_error_on_connecting_is_not_a_wrong_account():
+    script = (
+        _PREAMBLE
+        + """
+connect_error["work"] = RuntimeError("event loop is closed")
+answer = asyncio.run(tool("get_chats").fn(account="work"))
+print(json.dumps({"answer": answer, "final": connections.failure("work").final}))
+"""
+    )
+    result = _run(script)
+    assert result["final"] is False and "позже" in result["answer"]
+
+
+def test_list_accounts_says_an_account_is_connecting_while_it_is():
+    script = (
+        _PREAMBLE
+        + """
+release = asyncio.Event()
+async def slow_connect(label, client):
+    await release.wait()
+runner._connect_authorized_client = slow_connect
+async def main():
+    call = asyncio.ensure_future(tool("get_chats").fn(account="work"))
+    await asyncio.sleep(0.05)
+    text = await tool("list_accounts").fn()
+    release.set()
+    await call
+    return text
+print(json.dumps({"text": asyncio.run(main())}))
+"""
+    )
+    work = next(l for l in _run(script)["text"].splitlines() if l.startswith("work"))
+    assert "подключается сейчас" in work

@@ -19,6 +19,7 @@ imported lazily: it must not be imported before ``server.py`` has put our
 import asyncio
 import sys
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional
 
@@ -26,7 +27,9 @@ from telegram_mcp import runtime as _runtime
 from telethon.errors.rpcerrorlist import (
     AuthKeyDuplicatedError,
     AuthKeyInvalidError,
+    AuthKeyPermEmptyError,
     AuthKeyUnregisteredError,
+    SessionExpiredError,
     SessionRevokedError,
 )
 
@@ -55,7 +58,16 @@ TRANSIENT = "transient"
 
 # What Telegram answers for a session that is gone for good: revoked in
 # Settings -> Devices, or all sessions ended at once.
-_REVOKED_ERRORS = (AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError)
+_REVOKED_ERRORS = (
+    AuthKeyUnregisteredError,
+    SessionRevokedError,
+    AuthKeyInvalidError,
+    SessionExpiredError,
+    AuthKeyPermEmptyError,
+)
+
+# Label of the account the running call goes to (set by accounts.with_account).
+current_account: ContextVar[Optional[str]] = ContextVar("telegram_mcp_ag_account", default=None)
 
 
 @dataclass
@@ -63,6 +75,8 @@ class Failure:
     error: BaseException
     at: float
     kind: str = TRANSIENT
+    # The dead session was removed from config.env (one account only).
+    deleted: bool = False
 
     @property
     def final(self) -> bool:
@@ -119,8 +133,8 @@ def _connect_error_kind(error: BaseException) -> str:
     # is_user_authorized() swallows it and upstream raises _NotAuthorized.
     if isinstance(error, runner._NotAuthorized):
         return REVOKED
-    # What is left of RuntimeError is the "logged in to a different account" check.
-    if isinstance(error, RuntimeError):
+    # Upstream's TELEGRAM_EXPECTED_USERNAME check raises a plain RuntimeError.
+    if isinstance(error, RuntimeError) and "different account" in str(error):
         return WRONG_ACCOUNT
     return TRANSIENT
 
@@ -141,9 +155,7 @@ def is_single() -> bool:
 
 def label_for_call() -> Optional[str]:
     """The account of the running call, or the only account; ``None`` if unknown."""
-    from telegram_mcp_ag import accounts as _accounts
-
-    label = _accounts.current_account.get()
+    label = current_account.get()
     if label is not None:
         return label
     labels = list(_runtime.clients)
@@ -176,60 +188,68 @@ _CAUSE = {
 }
 
 
-def lost_text(label: str, kind: str) -> str:
+def lost_text(label: str, kind: str, deleted: bool = False) -> str:
     """What to answer when the session of ``label`` is gone for good (``kind`` is not transient).
 
-    One account: the dead session has been deleted, the way back is a restart
-    and a QR login in the chat. Several: only this account is named, with the
-    command that logs in to it alone; the other sessions are not touched.
+    ``deleted``: the dead session was removed from config.env (one account), so the
+    way back is a restart and a QR login in the chat. Otherwise the answer names
+    the account and the command that logs in to it alone; nothing is claimed
+    about files, and other sessions are not touched. The command comes last, with
+    no punctuation after it: the label is its final word and may be copied.
     """
-    if is_single() and kind != WRONG_ACCOUNT:
+    if deleted:
         return _single_text()
     try:
         command = _relogin.instructions(label)
     except _config.ConfigError:
         # Cannot happen for a label that came from runtime.clients; never paste an unchecked one.
         command = _relogin.instructions()
-    others = "" if is_single() else " Остальные аккаунты работают, их сессии не тронуты."
+    others = " Сессии остальных аккаунтов не тронуты." if len(_runtime.clients) > 1 else ""
     return (
         f"Сессия Telegram для аккаунта `{_quoted(label)}` {_CAUSE[kind]}.{others} "
-        f"Войти заново в этот аккаунт: {command}. После этого {_relogin.RESTART_CLIENT}."
+        f"После входа {_relogin.RESTART_CLIENT}. Войти заново в этот аккаунт: {command}"
     )
-
-
-def reason(state: "Failure") -> str:
-    """A cause a person can act on. The exception itself goes to stderr only."""
-    return "не удалось связаться с Telegram. Повторите запрос чуть позже."
 
 
 def unavailable_text(label: str, state: Failure) -> str:
     if state.final:
-        return lost_text(label, state.kind)
-    return f"Аккаунт `{_quoted(label)}` не подключился: {reason(state)}"
+        return lost_text(label, state.kind, state.deleted)
+    return (
+        f"Аккаунт `{_quoted(label)}` не подключился: не удалось связаться с Telegram. "
+        "Повторите запрос чуть позже."
+    )
 
 
-def _forget_dead_session(label: str, kind: str) -> None:
+def _forget_dead_session(label: str, kind: str) -> bool:
     """One account only: delete its dead session so the next start offers a QR login.
 
     With several accounts nothing is deleted: the user logs in to the lost one
     with the command in the answer, and the others must stay as they are.
+    Returns whether the session really was removed from config.env (a read-only
+    file, or a session that lives in the client's own environment, leaves it).
     """
     if not is_single() or kind == WRONG_ACCOUNT:
-        return
+        return False
     try:
-        _config.clear_session(label=label)
+        return _config.clear_session(label=label)
     except (OSError, _config.ConfigError):
-        pass
+        return False
 
 
-def mark_lost(label: str, error: BaseException, kind: str) -> None:
+def mark_lost(label: str, error: BaseException, kind: str) -> Failure:
     """Record that the account dropped out (in the middle of work or on connecting).
 
     Later calls to it get the same answer without going to Telegram.
     """
     _ready.discard(label)
-    _failures[label] = Failure(error, time.monotonic(), kind)
-    _forget_dead_session(label, kind)
+    state = Failure(error, time.monotonic(), kind, _forget_dead_session(label, kind))
+    _failures[label] = state
+    return state
+
+
+def is_connecting(label: str) -> bool:
+    task = _tasks.get(label)
+    return task is not None and not task.done()
 
 
 def profile(label: str) -> Optional[str]:
@@ -305,9 +325,7 @@ async def _connect(label: str, client) -> None:
             _runtime.clients.pop(label, None)
             print(f"Skipping account '{label}': its session is not logged in.", file=sys.stderr)
             return
-        kind = _connect_error_kind(exc)
-        _failures[label] = Failure(exc, time.monotonic(), kind)
-        _forget_dead_session(label, kind)
+        mark_lost(label, exc, _connect_error_kind(exc))
         return
     _failures.pop(label, None)
     _ready.add(label)

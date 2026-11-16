@@ -257,16 +257,16 @@ def _relogin_user_message(error: BaseException) -> Optional[str]:
         # A tool without `account` on a server with several accounts: nothing says whose session it is.
         return (
             "Сессия одного из аккаунтов Telegram отозвана, но определить, какого именно, "
-            "не удалось. Повторите запрос, указав аккаунт (параметр account): ответ про "
-            "него придёт с командой для входа заново."
+            "не удалось. Вызовите любой инструмент чтения по каждому аккаунту (параметр "
+            "account): тот, чья сессия отозвана, ответит командой для входа заново."
         )
     # The account is marked unavailable, so its next calls get the same answer
     # without a trip to Telegram. With one account its dead session is deleted
     # right away: without this every future launch keeps finding it "present" and
     # skips login-only mode, so the QR tools never come back and the user hits
     # this same opaque error again. With several accounts nothing is deleted.
-    _connections.mark_lost(label, error, kind)
-    return _connections.lost_text(label, kind)
+    state = _connections.mark_lost(label, error, kind)
+    return _connections.lost_text(label, kind, state.deleted)
 
 
 def _patch_log_and_format_error():
