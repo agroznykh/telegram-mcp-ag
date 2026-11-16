@@ -634,7 +634,8 @@ choose_account() {
 
 # Asks for a label until it is allowed and free. $1 = question, $2 = labels that
 # may not be reused (newline-separated), $3 = 1 if empty input is an answer
-# ("keep as it is"). Fills ASKED_LABEL (empty if skipped).
+# ("keep as it is"), $4 = the label that empty input stands for (optional; only
+# with $3 = 1). Fills ASKED_LABEL (empty if skipped).
 ASKED_LABEL=""
 ask_new_label() {
     local reply="" label="" status=0
@@ -642,7 +643,7 @@ ask_new_label() {
         ask "$1" reply
         if [[ -z "$reply" ]]; then
             if [[ "${3:-0}" -eq 1 ]]; then
-                ASKED_LABEL=""
+                ASKED_LABEL="${4:-}"
                 return 0
             fi
             warn "Название нужно: одно слово латиницей, например work."
@@ -763,7 +764,12 @@ add_account_flow() {
     if _in_lines "default" "$ACCOUNT_LABELS"; then
         echo
         info "Первый аккаунт пока без названия. Лучше его назвать, чтобы в чате различать оба."
-        ask_new_label "Название первого аккаунта, например personal (Enter -- оставить без названия): " "$ACCOUNT_LABELS"$'\n'"$new_label" 1
+        if [[ "$new_label" == "personal" ]]; then
+            # Enter cannot stand for a name the new account has just taken.
+            ask_new_label "Название первого аккаунта (Enter -- оставить без названия): " "$ACCOUNT_LABELS"$'\n'"$new_label" 1
+        else
+            ask_new_label "Название первого аккаунта (Enter -- personal): " "$ACCOUNT_LABELS"$'\n'"$new_label" 1 personal
+        fi
         first_name="$ASKED_LABEL"
     fi
 

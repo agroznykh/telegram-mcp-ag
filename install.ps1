@@ -780,13 +780,13 @@ function Get-ValidatedLabel {
 }
 
 # Asks for a label until it is allowed and free. With -AllowEmpty an empty answer
-# means "keep as it is" and returns ''.
+# means "keep as it is" and returns '' -- or -EmptyLabel, if given.
 function Read-NewLabel {
-    param([string]$Prompt, [string[]]$Taken = @(), [switch]$AllowEmpty)
+    param([string]$Prompt, [string[]]$Taken = @(), [switch]$AllowEmpty, [string]$EmptyLabel = '')
     while ($true) {
         $reply = Read-Answer $Prompt
         if ([string]::IsNullOrWhiteSpace($reply)) {
-            if ($AllowEmpty) { return '' }
+            if ($AllowEmpty) { return $EmptyLabel }
             Write-Warn 'Название нужно: одно слово латиницей, например work.'
             continue
         }
@@ -875,7 +875,12 @@ function Invoke-AddAccount {
     if ($existing -contains 'default') {
         Write-Host ''
         Write-Info 'Первый аккаунт пока без названия. Лучше его назвать, чтобы в чате различать оба.'
-        $firstName = Read-NewLabel -Prompt 'Название первого аккаунта, например personal (Enter -- оставить без названия)' -Taken ($existing + @($newLabel)) -AllowEmpty
+        if ($newLabel -eq 'personal') {
+            # Enter cannot stand for a name the new account has just taken.
+            $firstName = Read-NewLabel -Prompt 'Название первого аккаунта (Enter -- оставить без названия)' -Taken ($existing + @($newLabel)) -AllowEmpty
+        } else {
+            $firstName = Read-NewLabel -Prompt 'Название первого аккаунта (Enter -- personal)' -Taken ($existing + @($newLabel)) -AllowEmpty -EmptyLabel 'personal'
+        }
     }
 
     $after = @()
