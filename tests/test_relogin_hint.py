@@ -34,6 +34,16 @@ def _redirect_config_path(monkeypatch, tmp_path):
     monkeypatch.setattr(server._config, "CONFIG_PATH", tmp_path / "config.env")
 
 
+@pytest.fixture(autouse=True)
+def _reset_account_state():
+    # _relogin_user_message() records the account as lost in module-global state.
+    from telegram_mcp_ag import connections
+
+    yield
+    connections._failures.clear()
+    connections._ready.clear()
+
+
 def _rpc_error(cls):
     # telethon RPC error constructors take the originating request; its
     # content is irrelevant to the error type itself.
@@ -45,6 +55,7 @@ def _rpc_error(cls):
     [AuthKeyUnregisteredError, SessionRevokedError, AuthKeyInvalidError, AuthKeyDuplicatedError],
 )
 def test_relogin_user_message_covers_all_session_error_types(error_cls):
+    server._config.write_values({"TELEGRAM_SESSION_STRING": "stale"}, server._config.CONFIG_PATH)
     message = server._relogin_user_message(_rpc_error(error_cls))
     assert message is not None
     assert "--relogin" in message or "-Relogin" in message
