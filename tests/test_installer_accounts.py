@@ -274,11 +274,20 @@ def test_enter_on_the_default_question_means_none_when_there_was_none(box):
     assert config.default_account(box.values()) is None
 
 
-def test_the_first_account_can_stay_without_a_name(box):
+def test_enter_names_the_first_account_personal(box):
     box.seed({"TELEGRAM_SESSION_STRING": "first-session"})
     result = box.run("add_account_flow\n", ["work", "", "0"])
     assert result.returncode == 0, result.stdout + result.stderr
-    assert box.labels() == ["default", "work"]
+    assert box.labels() == ["personal", "work"]
+    assert box.values()["TELEGRAM_SESSION_STRING_PERSONAL"] == "first-session"
+    assert "TELEGRAM_SESSION_STRING" not in box.values()
+
+
+def test_when_the_new_account_is_personal_enter_leaves_the_first_one_unnamed(box):
+    box.seed({"TELEGRAM_SESSION_STRING": "first-session"})
+    result = box.run("add_account_flow\n", ["personal", "", "0"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert box.labels() == ["default", "personal"]
     assert box.values()["TELEGRAM_SESSION_STRING"] == "first-session"
 
 
