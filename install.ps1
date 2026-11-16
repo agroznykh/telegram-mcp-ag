@@ -758,18 +758,24 @@ try:
     print(config.validate_label(sys.argv[1], allow_default=sys.argv[2] == "1"))
 except config.ConfigError as exc:
     print(exc, file=sys.stderr)
-    sys.exit(1)
+    sys.exit(2)
 '@
 
 # The canonical form of a label, or $null (the reason is printed, in Russian) if
-# it is not allowed. The check is the package's own, so the installer and the
-# server cannot disagree.
+# it is not allowed (exit code 2 of the script). Any other failure (a broken venv,
+# a traceback) stops the installer, so that a caller does not ask again forever.
+# The check is the package's own, so the installer and the server cannot disagree.
 function Get-ValidatedLabel {
     param([string]$Label, [bool]$AllowDefault)
     $allow = '0'
     if ($AllowDefault) { $allow = '1' }
     $output = Invoke-PythonScript -PythonExe (Get-VenvPython) -ScriptBody $script:ValidateLabelScript -Arguments @($Label, $allow)
-    if ($LASTEXITCODE -ne 0) { return $null }
+    $status = $LASTEXITCODE
+    if ($status -eq 2) { return $null }
+    if ($status -ne 0) {
+        Write-Failure "Не удалось проверить название: установленный пакет не запускается. Запустите установщик ещё раз: $(Get-InstallerCommand '')"
+        exit 1
+    }
     return ([string]($output | Out-String)).Trim()
 }
 
@@ -786,6 +792,12 @@ function Read-NewLabel {
         }
         $label = Get-ValidatedLabel -Label $reply -AllowDefault $false
         if (-not $label) { continue }
+        # 'none' is how --set-default says "no default account": an account with
+        # that name could never be chosen as the default.
+        if ($label -eq 'none') {
+            Write-Warn 'Название "none" занято под служебное значение, выберите другое.'
+            continue
+        }
         if ($Taken -contains $label) {
             Write-Warn "Название `"$label`" уже занято, выберите другое."
             continue

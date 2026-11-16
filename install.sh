@@ -581,8 +581,10 @@ _describe_accounts() {
 }
 
 # Prints the canonical form of a label, or the reason it is not allowed (on
-# stderr, in Russian) and fails. $2 = 1 to let "default" through. The check is
-# the package's own, so the installer and the server cannot disagree.
+# stderr, in Russian) and exits with 2. Any other failure (a broken venv, a
+# traceback) exits with 1, so that a caller can tell "ask again" from "stop".
+# $2 = 1 to let "default" through. The check is the package's own, so the
+# installer and the server cannot disagree.
 _validated_label() {
     "$VENV_DIR/bin/python" -c '
 import sys
@@ -592,7 +594,7 @@ try:
     print(config.validate_label(sys.argv[1], allow_default=sys.argv[2] == "1"))
 except config.ConfigError as exc:
     print(exc, file=sys.stderr)
-    sys.exit(1)
+    sys.exit(2)
 ' "$1" "$2"
 }
 
@@ -635,7 +637,7 @@ choose_account() {
 # ("keep as it is"). Fills ASKED_LABEL (empty if skipped).
 ASKED_LABEL=""
 ask_new_label() {
-    local reply="" label=""
+    local reply="" label="" status=0
     while true; do
         ask "$1" reply
         if [[ -z "$reply" ]]; then
@@ -646,7 +648,21 @@ ask_new_label() {
             warn "Название нужно: одно слово латиницей, например work."
             continue
         fi
-        label="$(_validated_label "$reply" 0)" || continue
+        status=0
+        label="$(_validated_label "$reply" 0)" || status=$?
+        if [[ "$status" -eq 2 ]]; then
+            continue
+        fi
+        if [[ "$status" -ne 0 ]]; then
+            error "Не удалось проверить название: установленный пакет не запускается. Запустите установщик ещё раз: $(installer_command "")"
+            exit 1
+        fi
+        # "none" is how --set-default says "no default account": an account with
+        # that name could never be chosen as the default.
+        if [[ "$label" == "none" ]]; then
+            warn "Название \"none\" занято под служебное значение, выберите другое."
+            continue
+        fi
         if _in_lines "$label" "$2"; then
             warn "Название \"$label\" уже занято, выберите другое."
             continue

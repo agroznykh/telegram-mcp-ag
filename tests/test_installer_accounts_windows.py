@@ -257,3 +257,28 @@ Write-Output ('[' + (Get-ValidatedLabel -Label 'default' -AllowDefault $false) +
 Write-Output ('[' + (Get-ValidatedLabel -Label 'default' -AllowDefault $true) + ']')
 """
     assert _run(tmp_path, command).stdout.split() == ["[work_1]", "[]", "[default]"]
+
+
+def test_the_word_that_means_no_default_account_is_not_a_label(tmp_path):
+    command = r"""
+$script:Answers = @('none', 'work')
+$script:Index = 0
+function Read-Answer { param([string]$Prompt) $answer = $script:Answers[$script:Index]; $script:Index++; return $answer }
+function Get-ValidatedLabel { param([string]$Label, [bool]$AllowDefault) return $Label }
+Write-Output (Read-NewLabel -Prompt 'x')
+"""
+    assert _run(tmp_path, command).stdout.strip().splitlines()[-1] == "work"
+
+
+@pytest.mark.parametrize("code, reached", [(2, True), (1, False)])
+def test_a_crashing_label_check_stops_but_a_refusal_does_not(tmp_path, code, reached):
+    # Exit code 2 of the check script is "the label is not allowed"; any other
+    # failure is the interpreter breaking, and asking again would never end.
+    command = f"""{_use_this_interpreter()}
+function Invoke-PythonScript {{ param([string]$PythonExe, [string]$ScriptBody, [string[]]$Arguments) & '{PWSH}' -NoProfile -Command 'exit {code}' }}
+$null = Get-ValidatedLabel -Label x -AllowDefault $false
+Write-Output reached
+"""
+    result = _run(tmp_path, command, check=False)
+    assert ("reached" in result.stdout) is reached, result.stdout + result.stderr
+    assert result.returncode == (0 if reached else 1)

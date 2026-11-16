@@ -303,13 +303,15 @@ def test_a_third_account_is_added_next_to_two_named_ones(box):
 
 def test_bad_labels_are_asked_again(box):
     box.seed({"TELEGRAM_SESSION_STRING": "first-session"})
-    # Cyrillic, the reserved word, empty, then a good one; the first account's
-    # name may not repeat the new one either.
-    answers = ["рабочий", "default", "", "Work", "work", "personal", "0"]
+    # Cyrillic, the reserved word, the word that means "no default account",
+    # empty, then a good one; the first account's name may not repeat the new
+    # one either.
+    answers = ["рабочий", "default", "none", "", "Work", "work", "personal", "0"]
     result = box.run("add_account_flow\n", answers)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "латинские буквы" in result.stderr
     assert "зарезервирована" in result.stderr
+    assert "служебное значение" in result.stderr
     assert "уже занято" in result.stderr
     assert box.labels() == ["personal", "work"]
     assert box.login_calls() == ["work"]
@@ -553,12 +555,15 @@ REAL_ASK_PRELUDE = PRELUDE.replace(
 )
 assert REAL_ASK_PRELUDE != PRELUDE
 
+# The pipe is held open for reading and writing by this shell (fd 4), so what is
+# put into it stays there until ask() reads its line; a writer that came and went
+# between two questions would lose the lines it had written.
 REAL_ASK_FEED = r"""
 FIFO="$HOME/tty"
 mkfifo "$FIFO"
+exec 4<>"$FIFO"
+while IFS= read -r line <&3; do printf '%s\n' "$line" >&4; done
 TTY_DEVICE="$FIFO"
-( while IFS= read -r line <&3; do printf '%s\n' "$line" >"$FIFO"; done ) >/dev/null 2>&1 &
-trap 'kill $! 2>/dev/null || true' EXIT
 """
 
 
@@ -596,3 +601,21 @@ def test_the_real_ask_hands_a_number_to_choose_default_account(box, answer, expe
     result = _run_with_real_ask(box, body, [answer])
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"default=[{expected}]" in result.stdout
+
+
+def test_a_label_check_that_crashes_stops_instead_of_asking_forever(box):
+    # Exit code 2 means "the label is not allowed, ask again"; a crash of the
+    # interpreter (code 1) is not a wrong answer and must end the installer.
+    body = '_validated_label() { echo boom >&2; return 1; }\nask_new_label "Name: " "" 0\necho unreachable\n'
+    result = _run_with_real_ask(box, body, ["work"])
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "не запускается" in result.stderr
+    assert "unreachable" not in result.stdout
+
+
+def test_a_refused_label_is_asked_again_with_the_real_check(box):
+    body = 'ask_new_label "Name: " "" 0\necho "label=$ASKED_LABEL"\n'
+    result = _run_with_real_ask(box, body, ["default", "work"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "зарезервирована" in result.stderr
+    assert "label=work" in result.stdout
