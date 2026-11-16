@@ -7,8 +7,8 @@ are Russian and the console encoding differs between PowerShell versions, so the
 assertions look at exit codes and at the ASCII parts of the messages. No network,
 no Telegram.
 
-The two tests that call the installed package's Python run only on Windows: they
-need the venv layout (Scripts\\python.exe) install.ps1 expects.
+Two tests call the package's Python (through this interpreter standing in for the
+venv's).
 """
 
 import os
@@ -93,7 +93,7 @@ def test_right_flag_combinations_pass(tmp_path, arguments):
 
 def test_account_list_is_read_from_the_login_command(tmp_path):
     command = r"""
-function Get-LoginCliOutput { param([string[]]$Arguments) return @{ Status = 0; Output = "personal (x)`nwork`n`nBAD`nweird label (y)`nside_1`n" } }
+function Get-LoginCliOutput { param([string[]]$Arguments) return @{ Status = 0; Output = "personal (x)`nwork`n`nBAD`nwe!rd (y)`nside_1`n" } }
 if (-not (Read-AccountList)) { throw 'not read' }
 Write-Output ($script:AccountLabels -join ',')
 Write-Output $script:AccountDefault
@@ -229,15 +229,12 @@ Write-Output ('[' + (Get-SelfCheckAccount) + ']')
     assert _run(tmp_path, command).stdout.split() == ["[]", "[work]", "[personal]", "[side]"]
 
 
-windows_only = pytest.mark.skipif(sys.platform != "win32", reason="needs the Windows venv layout")
+def _use_this_interpreter() -> str:
+    # install.ps1 runs $VenvDir\Scripts\python.exe; the interpreter of this run
+    # (where the package is installed) stands in for it. Not a venv layout on CI.
+    return f"function Get-VenvPython {{ '{sys.executable}' }}"
 
 
-def _use_this_interpreters_venv() -> str:
-    # install.ps1 looks for $VenvDir\Scripts\python.exe.
-    return f"$VenvDir = '{Path(sys.executable).absolute().parent.parent}'"
-
-
-@windows_only
 def test_new_api_credentials_do_not_erase_the_sessions(tmp_path):
     config_path = tmp_path / "home" / "telegram-mcp-ag" / "config.env"
     config_path.parent.mkdir(parents=True)
@@ -246,16 +243,15 @@ def test_new_api_credentials_do_not_erase_the_sessions(tmp_path):
         "TELEGRAM_SESSION_STRING_PERSONAL=p\nTELEGRAM_SESSION_STRING_WORK=w\n",
         encoding="utf-8",
     )
-    _run(tmp_path, f"{_use_this_interpreters_venv()}; Save-ApiCredentials -ApiId 777 -ApiHash newhash")
+    _run(tmp_path, f"{_use_this_interpreter()}; Save-ApiCredentials -ApiId 777 -ApiHash newhash")
     text = config_path.read_text(encoding="utf-8")
     assert "TELEGRAM_API_ID=777" in text and "TELEGRAM_API_HASH=newhash" in text
     assert "TELEGRAM_SESSION_STRING_PERSONAL=p" in text and "TELEGRAM_SESSION_STRING_WORK=w" in text
     assert "# note" in text
 
 
-@windows_only
 def test_labels_are_checked_by_the_package(tmp_path):
-    command = f"""{_use_this_interpreters_venv()}
+    command = f"""{_use_this_interpreter()}
 Write-Output ('[' + (Get-ValidatedLabel -Label 'Work-1' -AllowDefault $false) + ']')
 Write-Output ('[' + (Get-ValidatedLabel -Label 'default' -AllowDefault $false) + ']')
 Write-Output ('[' + (Get-ValidatedLabel -Label 'default' -AllowDefault $true) + ']')
